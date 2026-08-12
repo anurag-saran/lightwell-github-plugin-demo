@@ -1,55 +1,29 @@
 # Lightwell GitHub Plugin
 
-Plugin repo for Dependabot-style Lightwell library remediations on GitHub.
+Plugin that scans a **target app repo** for Lightwell-matching libraries and opens a PR there.
 
-App repos (like [`payments-service`](https://github.com/anurag-saran/payments-service)) stay clean — they only add a thin workflow that **calls** this plugin.
-
-No MTA. No OpenRewrite. Catalog match → pom bump → PR.
+The app repo (e.g. [`payments-service`](https://github.com/anurag-saran/payments-service)) stays a normal Maven app — **no** `.github/workflows` and **no** plugin code required in the app.
 
 ## Contents
 
-- `lightwell-github/catalog.json` — Lightwell match catalog
-- `lightwell-github/scan_poms.py` / `apply_bumps.py` — scan and apply helpers
-- `.github/workflows/lightwell-remediate.yml` — reusable workflow (`workflow_call`)
-- `payments-service-demo/` — optional fixture for testing this plugin repo itself
+- `lightwell-github/` — catalog + scan/apply scripts
+- `.github/workflows/lightwell-remediate.yml` — runs here; opens PRs on the target app
+- `payments-service-demo/` — optional local fixture
 
-## Use from an app repo
+## One-time setup
 
-In the app (e.g. `payments-service`), add only:
+1. Create a PAT (classic `repo` scope, or fine-grained with contents/PRs on the target app).
+2. In this plugin repo: **Settings → Secrets and variables → Actions** → add `LIGHTWELL_REPO_TOKEN`
+3. **Settings → Actions**: allow actions; workflow can use the secret to push to the app repo
 
-```yaml
-# .github/workflows/lightwell-remediate.yml
-name: Lightwell Remediate
-on:
-  workflow_dispatch:
-  push:
-    paths: ["**/pom.xml"]
-  schedule:
-    - cron: "0 9 * * 1"
+## Run against payments-service
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+1. Open **Actions → Lightwell Remediate → Run workflow**
+2. Keep target `anurag-saran/payments-service` (or change it)
+3. Run — PR opens on the **app** repo
+4. On the app: review PR → **merge** or **close**
 
-jobs:
-  remediate:
-    uses: anurag-saran/lightwell-github-plugin-demo/.github/workflows/lightwell-remediate.yml@main
-    secrets: inherit
-```
-
-App **Settings → Actions**:
-
-1. Allow actions (including reusable workflows from other repos)
-2. Workflow permissions: **Read and write**
-3. Check **Allow GitHub Actions to create and approve pull requests**
-
-## Behavior
-
-1. Runs on schedule / pom change / manual dispatch
-2. Matches app deps against this repo’s catalog
-3. Opens or updates a PR labeled `lightwell`
-4. Developer **merges** to accept or **closes** to reject
+Also runs weekly on schedule (same default target).
 
 ## Local dry-run
 

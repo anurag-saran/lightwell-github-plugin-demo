@@ -1,76 +1,91 @@
 name: Lightwell Remediate
 
-# Reusable Dependabot-style Lightwell remediation.
-# - workflow_call: used by app repos (e.g. payments-service)
-# - workflow_dispatch / schedule / push: self-test in this plugin repo
+# Runs in the plugin repo and opens PRs on a target app repo (no workflows required there).
 on:
-  workflow_call:
   workflow_dispatch:
-  push:
-    paths:
-      - "**/pom.xml"
-      - "lightwell-github/catalog.json"
-      - ".github/workflows/lightwell-remediate.yml"
+    inputs:
+      target_repo:
+        description: App repo to remediate (owner/name)
+        required: true
+        default: anurag-saran/payments-service
+        type: string
   schedule:
     - cron: "0 9 * * 1"
+  push:
+    paths:
+      - "lightwell-github/catalog.json"
+      - ".github/workflows/lightwell-remediate.yml"
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
 
 concurrency:
-  group: lightwell-remediate-${{ github.repository }}
+  group: lightwell-remediate-${{ github.event.inputs.target_repo || 'anurag-saran/payments-service' }}
   cancel-in-progress: true
 
 jobs:
   remediate:
-    name: Scan and open remediation PR
+    name: Scan target app and open remediation PR
     runs-on: ubuntu-latest
+    env:
+      TARGET_REPO: ${{ github.event.inputs.target_repo || 'anurag-saran/payments-service' }}
+      # PAT/fine-grained token with access to the target app repo
+      GH_TOKEN: ${{ secrets.LIGHTWELL_REPO_TOKEN }}
     steps:
-      - name: Checkout app repository
-        uses: actions/checkout@v4
+      - name: Require LIGHTWELL_REPO_TOKEN
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Set repository secret LIGHTWELL_REPO_TOKEN (PAT with repo access to the target app)."
+            exit 1
+          fi
 
       - name: Checkout Lightwell plugin
         uses: actions/checkout@v4
         with:
-          repository: anurag-saran/lightwell-github-plugin-demo
           path: _lightwell
+
+      - name: Checkout target app
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          token: ${{ secrets.LIGHTWELL_REPO_TOKEN }}
+          path: _app
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Scan pom.xml files
+      - name: Scan target pom.xml files
         id: scan
+        working-directory: _app
         run: |
-          PLUGIN="_lightwell/lightwell-github"
+          PLUGIN="../_lightwell/lightwell-github"
           python3 "$PLUGIN/scan_poms.py" \
             --root . \
             --catalog "$PLUGIN/catalog.json" \
-            --out-dir "$PLUGIN/out"
-          MATCH_COUNT=$(python3 -c "import json; print(len(json.load(open('_lightwell/lightwell-github/out/matches.json'))['matches']))")
+            --out-dir /tmp/lightwell-out
+          MATCH_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/lightwell-out/matches.json'))['matches']))")
           echo "match_count=$MATCH_COUNT" >> "$GITHUB_OUTPUT"
-          cat "$PLUGIN/out/report.md" >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/lightwell-out/report.md >> "$GITHUB_STEP_SUMMARY"
+          echo "Target: $TARGET_REPO" >> "$GITHUB_STEP_SUMMARY"
 
       - name: No matches
         if: steps.scan.outputs.match_count == '0'
-        run: echo "No Lightwell remediations available."
+        run: echo "No Lightwell remediations available for $TARGET_REPO."
 
-      - name: Apply bumps and open or update PR
+      - name: Apply bumps and open or update PR on target
         if: steps.scan.outputs.match_count != '0'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: _app
         run: |
           set -euo pipefail
 
-          PLUGIN="_lightwell/lightwell-github"
+          PLUGIN="../_lightwell/lightwell-github"
           BRANCH="lightwell/remediations"
 
           TITLE=$(python3 - <<'PY'
           import json
-          matches = json.load(open("_lightwell/lightwell-github/out/matches.json"))["matches"]
+          matches = json.load(open("/tmp/lightwell-out/matches.json"))["matches"]
           if len(matches) == 1:
               m = matches[0]
               print(f"chore(deps): remediate {m['artifactId']} to {m['toVersion']} (Lightwell)")
@@ -84,11 +99,11 @@ jobs:
             echo
             echo "Lightwell found matching remediated libraries and opened this PR automatically."
             echo
-            echo "Plugin source: https://github.com/anurag-saran/lightwell-github-plugin-demo"
+            echo "Opened by plugin: https://github.com/anurag-saran/lightwell-github-plugin-demo"
             echo
             echo "**Merge** to accept the update, or **close** to reject it."
             echo
-            cat "$PLUGIN/out/report.md"
+            cat /tmp/lightwell-out/report.md
             echo
             echo "## Test plan"
             echo
@@ -97,15 +112,13 @@ jobs:
             echo "- [ ] Confirm Lightwell artifacts resolve in CI"
           } > /tmp/pr-body.md
 
-          python3 "$PLUGIN/apply_bumps.py" --root . --matches "$PLUGIN/out/matches.json"
+          python3 "$PLUGIN/apply_bumps.py" --root . --matches /tmp/lightwell-out/matches.json
 
-          mapfile -t POMS < <(python3 -c 'import json; print("\n".join(m["pom"] for m in json.load(open("_lightwell/lightwell-github/out/matches.json"))["matches"]))')
+          mapfile -t POMS < <(python3 -c 'import json; print("\n".join(m["pom"] for m in json.load(open("/tmp/lightwell-out/matches.json"))["matches"]))')
 
           git config user.name "lightwell-bot"
           git config user.email "lightwell-bot@users.noreply.github.com"
-
-          # Do not commit the checked-out plugin copy
-          rm -rf _lightwell
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git"
 
           git switch -C "$BRANCH"
           git add "${POMS[@]}"
@@ -117,14 +130,14 @@ jobs:
           git commit -m "$TITLE"
           git push -u origin "$BRANCH" --force
 
-          EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
-          gh label create lightwell --description "Lightwell remediation proposals" --color "0E4429" 2>/dev/null || true
+          EXISTING_PR=$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          gh label create lightwell --repo "$TARGET_REPO" --description "Lightwell remediation proposals" --color "0E4429" 2>/dev/null || true
           if [ -n "$EXISTING_PR" ]; then
-            gh pr edit "$EXISTING_PR" --title "$TITLE" --body-file /tmp/pr-body.md --add-label lightwell
-            PR_URL=$(gh pr view "$EXISTING_PR" --json url --jq .url)
+            gh pr edit "$EXISTING_PR" --repo "$TARGET_REPO" --title "$TITLE" --body-file /tmp/pr-body.md --add-label lightwell
+            PR_URL=$(gh pr view "$EXISTING_PR" --repo "$TARGET_REPO" --json url --jq .url)
             echo "Updated PR: $PR_URL"
           else
-            PR_URL=$(gh pr create --title "$TITLE" --body-file /tmp/pr-body.md --base main --head "$BRANCH" --label lightwell)
+            PR_URL=$(gh pr create --repo "$TARGET_REPO" --title "$TITLE" --body-file /tmp/pr-body.md --base main --head "$BRANCH" --label lightwell)
             echo "Opened PR: $PR_URL"
           fi
 
@@ -132,7 +145,7 @@ jobs:
             echo
             echo "### Lightwell remediation PR"
             echo
-            echo "Opened or updated: $PR_URL"
+            echo "Opened or updated on \`$TARGET_REPO\`: $PR_URL"
             echo
             echo "Merge to accept, or close to reject."
           } >> "$GITHUB_STEP_SUMMARY"
