@@ -121,14 +121,13 @@ def render_report(matches: list[dict[str, Any]]) -> str:
             lines.append(f"  - {m['summary']}")
     lines.extend(["", "## Proposed pom diff", "", "```diff"])
     for m in matches:
-        lines.append(f"--- a/{m['pom']}")
-        lines.append(f"+++ b/{m['pom']}")
-        lines.append(
-            f"-            <version>{m['fromVersion']}</version>"
-        )
-        lines.append(
-            f"+            <version>{m['toVersion']}</version>"
-        )
+        lines.append(f"# {m['groupId']}:{m['artifactId']} ({m['pom']})")
+        lines.append(" <dependency>")
+        lines.append(f"   <groupId>{m['groupId']}</groupId>")
+        lines.append(f"   <artifactId>{m['artifactId']}</artifactId>")
+        lines.append(f"-  <version>{m['fromVersion']}</version>")
+        lines.append(f"+  <version>{m['toVersion']}</version>")
+        lines.append(" </dependency>")
         lines.append("")
     lines.append("```")
     lines.extend(
