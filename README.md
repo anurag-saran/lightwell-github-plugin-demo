@@ -8,8 +8,6 @@ The app repo (e.g. [`payments-service`](https://github.com/anurag-saran/payments
 
 - `lightwell-github/` — catalog + scan/apply scripts
 - `.github/workflows/lightwell-remediate.yml` — runs here; opens PRs on the target app
-- `payments-service-demo/` — optional local fixture
-
 ## One-time setup
 
 1. Create a PAT (classic `repo` scope, or fine-grained with contents/PRs on the target app).
@@ -25,9 +23,9 @@ The app repo (e.g. [`payments-service`](https://github.com/anurag-saran/payments
 
 Also runs weekly on schedule (same default target).
 
-## Local dry-run
+## Local dry-run (against a local clone of the app)
 
 ```bash
-python3 lightwell-github/scan_poms.py --root payments-service-demo
+python3 lightwell-github/scan_poms.py --root /path/to/payments-service
 cat lightwell-github/out/report.md
 ```
