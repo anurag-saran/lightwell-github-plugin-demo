@@ -32,7 +32,6 @@ DEFAULT_EXCLUDE_DIR_NAMES = {
     "custom-recipes",
     "lightwell-recipes",
     "lightwell-github",
-    "_lightwell",
 }
 
 
@@ -76,16 +75,17 @@ def match_remediations(
             rem = index.get(key)
             if not rem:
                 continue
-            matches.append(
-                {
-                    "pom": rel,
-                    "groupId": dep["groupId"],
-                    "artifactId": dep["artifactId"],
-                    "fromVersion": dep["version"],
-                    "toVersion": rem["toVersion"],
-                    "summary": rem.get("summary", ""),
-                }
-            )
+            match: dict[str, Any] = {
+                "pom": rel,
+                "groupId": dep["groupId"],
+                "artifactId": dep["artifactId"],
+                "fromVersion": dep["version"],
+                "toVersion": rem["toVersion"],
+                "summary": rem.get("summary", ""),
+            }
+            if rem.get("tier"):
+                match["tier"] = rem["tier"]
+            matches.append(match)
     return matches
 
 
@@ -111,9 +111,10 @@ def render_report(matches: list[dict[str, Any]]) -> str:
 
     lines.extend(["## Proposed bumps", ""])
     for m in matches:
+        tier = f" ({m['tier']})" if m.get("tier") else ""
         lines.append(
             f"- `{m['groupId']}:{m['artifactId']}` "
-            f"`{m['fromVersion']}` → `{m['toVersion']}` "
+            f"`{m['fromVersion']}` → `{m['toVersion']}`{tier} "
             f"in `{m['pom']}`"
         )
         if m.get("summary"):

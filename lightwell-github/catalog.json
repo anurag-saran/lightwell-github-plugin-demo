@@ -1,11 +1,96 @@
 {
   "remediations": [
     {
+      "groupId": "com.fasterxml.woodstox",
+      "artifactId": "woodstox-core",
+      "fromVersion": "6.0.3",
+      "toVersion": "6.0.3.rhlw-00001",
+      "tier": "remediated",
+      "summary": "Lightwell remediated rebuild of woodstox-core 6.0.3"
+    },
+    {
+      "groupId": "com.jayway.jsonpath",
+      "artifactId": "json-path",
+      "fromVersion": "2.7.0",
+      "toVersion": "2.7.0.rhlw-00001",
+      "tier": "remediated",
+      "summary": "Lightwell remediated rebuild of json-path 2.7.0"
+    },
+    {
+      "groupId": "com.jayway.jsonpath",
+      "artifactId": "json-path",
+      "fromVersion": "2.8.0",
+      "toVersion": "2.8.0.rhlw-00001",
+      "tier": "remediated",
+      "summary": "Lightwell remediated rebuild of json-path 2.8.0"
+    },
+    {
+      "groupId": "org.springframework",
+      "artifactId": "spring-core",
+      "fromVersion": "5.3.18",
+      "toVersion": "5.3.18.rhlw-00003",
+      "tier": "remediated",
+      "summary": "Lightwell remediated rebuild of spring-core 5.3.18"
+    },
+    {
+      "groupId": "org.json",
+      "artifactId": "json",
+      "fromVersion": "20220320.0.0",
+      "toVersion": "20220320.0.0.rhlw-00003",
+      "tier": "remediated+validated",
+      "summary": "Lightwell rebuild of json 20220320.0.0 (validated and remediated demo feeds)"
+    },
+    {
+      "groupId": "ch.qos.logback",
+      "artifactId": "logback-classic",
+      "fromVersion": "1.2.11",
+      "toVersion": "1.2.11.rhlw-00001",
+      "tier": "validated",
+      "summary": "Lightwell validated rebuild of logback-classic 1.2.11"
+    },
+    {
+      "groupId": "com.fasterxml.jackson.core",
+      "artifactId": "jackson-databind",
+      "fromVersion": "2.13.4",
+      "toVersion": "2.13.4.rhlw-00001",
+      "tier": "validated",
+      "summary": "Lightwell validated rebuild of jackson-databind 2.13.4"
+    },
+    {
+      "groupId": "commons-fileupload",
+      "artifactId": "commons-fileupload",
+      "fromVersion": "1.4.0",
+      "toVersion": "1.4.0.rhlw-00001",
+      "tier": "validated",
+      "summary": "Lightwell validated rebuild of commons-fileupload 1.4.0"
+    },
+    {
       "groupId": "commons-io",
       "artifactId": "commons-io",
       "fromVersion": "2.11.0",
       "toVersion": "2.11.0.rhlw-00001",
-      "summary": "Lightwell remediated rebuild of commons-io 2.11.0"
+      "tier": "validated",
+      "summary": "Lightwell validated rebuild of commons-io 2.11.0"
+    },
+    {
+      "groupId": "org.apache.httpcomponents",
+      "artifactId": "httpclient",
+      "fromVersion": "4.5.12",
+      "toVersion": "4.5.12.rhlw-00001",
+      "tier": "validated",
+      "summary": "Lightwell validated rebuild of httpclient 4.5.12"
+    },
+    {
+      "groupId": "org.yaml",
+      "artifactId": "snakeyaml",
+      "fromVersion": "1.33.0",
+      "toVersion": "1.33.0.rhlw-00001",
+      "tier": "validated",
+      "summary": "Lightwell validated rebuild of snakeyaml 1.33.0"
     }
-  ]
+  ],
+  "repositories": {
+    "validated": "https://packages.redhat.com/lightwell/public-lightwell-demo/java/validated/",
+    "remediated": "https://packages.redhat.com/lightwell/public-lightwell-demo/java/remediated/"
+  }
 }
