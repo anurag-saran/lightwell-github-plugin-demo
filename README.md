@@ -8,6 +8,7 @@ The app repo (e.g. [`payments-service`](https://github.com/anurag-saran/payments
 
 - `lightwell-github/` — catalog + scan/apply scripts
 - `.github/workflows/lightwell-remediate.yml` — runs here; opens PRs on the target app
+
 ## One-time setup
 
 1. Create a PAT (classic `repo` scope, or fine-grained with contents/PRs on the target app).
