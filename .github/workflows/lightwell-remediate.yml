@@ -14,6 +14,7 @@ on:
   push:
     paths:
       - "lightwell-github/catalog.json"
+      - "lightwell-github/write_badge.py"
       - ".github/workflows/lightwell-remediate.yml"
 
 permissions:
@@ -69,6 +70,38 @@ jobs:
           echo "match_count=$MATCH_COUNT" >> "$GITHUB_OUTPUT"
           cat /tmp/lightwell-out/report.md >> "$GITHUB_STEP_SUMMARY"
           echo "Target: $TARGET_REPO" >> "$GITHUB_STEP_SUMMARY"
+          echo "Available library updates: $MATCH_COUNT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish available-updates badge on target main
+        working-directory: _app
+        run: |
+          set -euo pipefail
+          PLUGIN="../_lightwell/lightwell-github"
+
+          python3 "$PLUGIN/write_badge.py" \
+            --matches /tmp/lightwell-out/matches.json \
+            --out lightwell-badge.json
+
+          git config user.name "lightwell-bot"
+          git config user.email "lightwell-bot@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git"
+
+          git fetch origin main
+          git switch main
+          git pull --ff-only origin main
+
+          python3 "$PLUGIN/write_badge.py" \
+            --matches /tmp/lightwell-out/matches.json \
+            --out lightwell-badge.json
+
+          git add lightwell-badge.json
+          if git diff --cached --quiet; then
+            echo "Badge already up to date on main."
+          else
+            git commit -m "chore(lightwell): refresh available library updates badge"
+            git push origin main
+            echo "Published lightwell-badge.json to main (${{ steps.scan.outputs.match_count }} available)."
+          fi
 
       - name: No matches
         if: steps.scan.outputs.match_count == '0'
@@ -97,7 +130,7 @@ jobs:
           {
             echo "## Summary"
             echo
-            echo "Lightwell found matching remediated libraries and opened this PR automatically."
+            echo "Lightwell found **${{ steps.scan.outputs.match_count }}** matching library update(s) and opened this PR automatically."
             echo
             echo "Opened by plugin: https://github.com/anurag-saran/lightwell-github-plugin-demo"
             echo
@@ -112,15 +145,15 @@ jobs:
             echo "- [ ] Confirm Lightwell artifacts resolve in CI"
           } > /tmp/pr-body.md
 
+          git fetch origin main
+          git switch main
+          git pull --ff-only origin main
+          git switch -C "$BRANCH"
+
           python3 "$PLUGIN/apply_bumps.py" --root . --matches /tmp/lightwell-out/matches.json
 
           mapfile -t POMS < <(python3 -c 'import json; print("\n".join(m["pom"] for m in json.load(open("/tmp/lightwell-out/matches.json"))["matches"]))')
 
-          git config user.name "lightwell-bot"
-          git config user.email "lightwell-bot@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git"
-
-          git switch -C "$BRANCH"
           git add "${POMS[@]}"
           if git diff --cached --quiet; then
             echo "No pom changes to commit."
@@ -146,6 +179,8 @@ jobs:
             echo "### Lightwell remediation PR"
             echo
             echo "Opened or updated on \`$TARGET_REPO\`: $PR_URL"
+            echo
+            echo "Available library updates shown on badge: ${{ steps.scan.outputs.match_count }}"
             echo
             echo "Merge to accept, or close to reject."
           } >> "$GITHUB_STEP_SUMMARY"
