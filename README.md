@@ -1,65 +1,59 @@
-# Lightwell GitHub Plugin Demo
+# Lightwell GitHub Plugin
 
-GitHub-only demo: scan a Maven app for Lightwell-matching libraries, show the developer what will change, then open a PR only after they press a button.
+Plugin repo for Dependabot-style Lightwell library remediations on GitHub.
+
+App repos (like [`payments-service`](https://github.com/anurag-saran/payments-service)) stay clean — they only add a thin workflow that **calls** this plugin.
 
 No MTA. No OpenRewrite. Catalog match → pom bump → PR.
 
-## What it proves
+## Contents
 
-1. A GitHub Action can detect deps that have a Lightwell remediated version (e.g. `commons-io:2.11.0` → `2.11.0.rhlw-00001`).
-2. The developer sees the proposed change **before** any PR exists (Job Summary + Issue).
-3. The developer explicitly runs **Lightwell Open PR** (`confirm=open-pr`) to create the pull request.
+- `lightwell-github/catalog.json` — Lightwell match catalog
+- `lightwell-github/scan_poms.py` / `apply_bumps.py` — scan and apply helpers
+- `.github/workflows/lightwell-remediate.yml` — reusable workflow (`workflow_call`)
+- `payments-service-demo/` — optional fixture for testing this plugin repo itself
 
-## Repo layout
+## Use from an app repo
 
-- `payments-service-demo/` — sample Maven app (baseline uses `commons-io:2.11.0`)
-- `lightwell-github/catalog.json` — static Lightwell match catalog
-- `lightwell-github/scan_poms.py` — scan only (writes report, no edits)
-- `lightwell-github/apply_bumps.py` — apply version bumps from scan output
-- `.github/workflows/lightwell-scan.yml` — scan → Job Summary + Issue
-- `.github/workflows/lightwell-open-pr.yml` — button → branch + PR
+In the app (e.g. `payments-service`), add only:
 
-## Demo flow on GitHub
+```yaml
+# .github/workflows/lightwell-remediate.yml
+name: Lightwell Remediate
+on:
+  workflow_dispatch:
+  push:
+    paths: ["**/pom.xml"]
+  schedule:
+    - cron: "0 9 * * 1"
 
-### Step 1 — Scan (info only)
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
 
-1. Open **Actions** → **Lightwell Scan** → **Run workflow**
-2. Read the **Job Summary**, or open the Issue titled **Lightwell remediations available**
-
-You should see:
-
-```diff
--            <version>2.11.0</version>
-+            <version>2.11.0.rhlw-00001</version>
+jobs:
+  remediate:
+    uses: anurag-saran/lightwell-github-plugin-demo/.github/workflows/lightwell-remediate.yml@main
+    secrets: inherit
 ```
 
-No PR is opened yet.
+App **Settings → Actions**:
 
-### Step 2 — Open PR (button)
+1. Allow actions (including reusable workflows from other repos)
+2. Workflow permissions: **Read and write**
+3. Check **Allow GitHub Actions to create and approve pull requests**
 
-1. Review the scan info
-2. **Actions** → **Lightwell Open PR** → **Run workflow**
-3. Set `confirm` to `open-pr`
-4. Run — opens a PR with the pom bump
+## Behavior
+
+1. Runs on schedule / pom change / manual dispatch
+2. Matches app deps against this repo’s catalog
+3. Opens or updates a PR labeled `lightwell`
+4. Developer **merges** to accept or **closes** to reject
 
 ## Local dry-run
 
 ```bash
-python3 lightwell-github/scan_poms.py --root .
+python3 lightwell-github/scan_poms.py --root payments-service-demo
 cat lightwell-github/out/report.md
-
-# optional: apply locally (does not open a PR)
-python3 lightwell-github/apply_bumps.py --root .
-git diff -- payments-service-demo/pom.xml
-git checkout -- payments-service-demo/pom.xml
 ```
-
-## Reset baseline
-
-After a successful Open PR merge (or local apply), set the demo app back to:
-
-```xml
-<version>2.11.0</version>
-```
-
-in `payments-service-demo/pom.xml` before re-running the scan demo.

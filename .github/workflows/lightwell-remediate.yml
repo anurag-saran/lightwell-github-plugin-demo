@@ -1,0 +1,138 @@
+name: Lightwell Remediate
+
+# Reusable Dependabot-style Lightwell remediation.
+# - workflow_call: used by app repos (e.g. payments-service)
+# - workflow_dispatch / schedule / push: self-test in this plugin repo
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    paths:
+      - "**/pom.xml"
+      - "lightwell-github/catalog.json"
+      - ".github/workflows/lightwell-remediate.yml"
+  schedule:
+    - cron: "0 9 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: lightwell-remediate-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  remediate:
+    name: Scan and open remediation PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Lightwell plugin
+        uses: actions/checkout@v4
+        with:
+          repository: anurag-saran/lightwell-github-plugin-demo
+          path: _lightwell
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan pom.xml files
+        id: scan
+        run: |
+          PLUGIN="_lightwell/lightwell-github"
+          python3 "$PLUGIN/scan_poms.py" \
+            --root . \
+            --catalog "$PLUGIN/catalog.json" \
+            --out-dir "$PLUGIN/out"
+          MATCH_COUNT=$(python3 -c "import json; print(len(json.load(open('_lightwell/lightwell-github/out/matches.json'))['matches']))")
+          echo "match_count=$MATCH_COUNT" >> "$GITHUB_OUTPUT"
+          cat "$PLUGIN/out/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No matches
+        if: steps.scan.outputs.match_count == '0'
+        run: echo "No Lightwell remediations available."
+
+      - name: Apply bumps and open or update PR
+        if: steps.scan.outputs.match_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          PLUGIN="_lightwell/lightwell-github"
+          BRANCH="lightwell/remediations"
+
+          TITLE=$(python3 - <<'PY'
+          import json
+          matches = json.load(open("_lightwell/lightwell-github/out/matches.json"))["matches"]
+          if len(matches) == 1:
+              m = matches[0]
+              print(f"chore(deps): remediate {m['artifactId']} to {m['toVersion']} (Lightwell)")
+          else:
+              print(f"chore(deps): remediate {len(matches)} dependencies to Lightwell builds")
+          PY
+          )
+
+          {
+            echo "## Summary"
+            echo
+            echo "Lightwell found matching remediated libraries and opened this PR automatically."
+            echo
+            echo "Plugin source: https://github.com/anurag-saran/lightwell-github-plugin-demo"
+            echo
+            echo "**Merge** to accept the update, or **close** to reject it."
+            echo
+            cat "$PLUGIN/out/report.md"
+            echo
+            echo "## Test plan"
+            echo
+            echo "- [ ] Review pom.xml version bumps"
+            echo "- [ ] Run \`mvn -q test\` (or project build)"
+            echo "- [ ] Confirm Lightwell artifacts resolve in CI"
+          } > /tmp/pr-body.md
+
+          python3 "$PLUGIN/apply_bumps.py" --root . --matches "$PLUGIN/out/matches.json"
+
+          mapfile -t POMS < <(python3 -c 'import json; print("\n".join(m["pom"] for m in json.load(open("_lightwell/lightwell-github/out/matches.json"))["matches"]))')
+
+          git config user.name "lightwell-bot"
+          git config user.email "lightwell-bot@users.noreply.github.com"
+
+          # Do not commit the checked-out plugin copy
+          rm -rf _lightwell
+
+          git switch -C "$BRANCH"
+          git add "${POMS[@]}"
+          if git diff --cached --quiet; then
+            echo "No pom changes to commit."
+            exit 0
+          fi
+
+          git commit -m "$TITLE"
+          git push -u origin "$BRANCH" --force
+
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          gh label create lightwell --description "Lightwell remediation proposals" --color "0E4429" 2>/dev/null || true
+          if [ -n "$EXISTING_PR" ]; then
+            gh pr edit "$EXISTING_PR" --title "$TITLE" --body-file /tmp/pr-body.md --add-label lightwell
+            PR_URL=$(gh pr view "$EXISTING_PR" --json url --jq .url)
+            echo "Updated PR: $PR_URL"
+          else
+            PR_URL=$(gh pr create --title "$TITLE" --body-file /tmp/pr-body.md --base main --head "$BRANCH" --label lightwell)
+            echo "Opened PR: $PR_URL"
+          fi
+
+          {
+            echo
+            echo "### Lightwell remediation PR"
+            echo
+            echo "Opened or updated: $PR_URL"
+            echo
+            echo "Merge to accept, or close to reject."
+          } >> "$GITHUB_STEP_SUMMARY"

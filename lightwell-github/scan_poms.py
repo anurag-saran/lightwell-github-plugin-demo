@@ -32,6 +32,7 @@ DEFAULT_EXCLUDE_DIR_NAMES = {
     "custom-recipes",
     "lightwell-recipes",
     "lightwell-github",
+    "_lightwell",
 }
 
 
