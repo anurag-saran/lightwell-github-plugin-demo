@@ -1,0 +1,11 @@
+{
+  "remediations": [
+    {
+      "groupId": "commons-io",
+      "artifactId": "commons-io",
+      "fromVersion": "2.11.0",
+      "toVersion": "2.11.0.rhlw-00001",
+      "summary": "Lightwell remediated rebuild of commons-io 2.11.0"
+    }
+  ]
+}

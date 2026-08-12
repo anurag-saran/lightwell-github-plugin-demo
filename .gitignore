@@ -1,0 +1,7 @@
+.DS_Store
+lightwell-github/out/
+lightwell-github/__pycache__/
+*.pyc
+payments-service-demo/target/
+.idea/
+*.iml
