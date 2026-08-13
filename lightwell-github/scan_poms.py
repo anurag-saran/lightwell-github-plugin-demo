@@ -69,14 +69,41 @@ def find_poms(root: Path, exclude_dirs: set[str]) -> list[Path]:
     )
 
 
+def _read_properties(root: ET.Element) -> dict[str, str]:
+    """Read project <properties> (single-level; no parent POM inheritance)."""
+    props: dict[str, str] = {}
+    for elem in root:
+        if _local_tag(elem.tag) != "properties":
+            continue
+        for child in elem:
+            name = _local_tag(child.tag)
+            value = (child.text or "").strip()
+            if name and value:
+                props[name] = value
+    return props
+
+
+def _resolve_version(
+    raw: str, props: dict[str, str]
+) -> tuple[str | None, str | None]:
+    """Return (resolved_version, property_name_or_None)."""
+    if raw.startswith("${") and raw.endswith("}"):
+        key = raw[2:-1].strip()
+        if key in props:
+            return props[key], key
+        return None, key
+    return raw, None
+
+
 def parse_dependencies(pom_text: str, *, pom_label: str = "pom.xml") -> list[dict[str, str]]:
-    """Parse <dependency> entries via XML. Skips missing versions; warns on ${properties}."""
+    """Parse <dependency> entries via XML. Resolves ${property} from same POM."""
     try:
         root = ET.fromstring(pom_text)
     except ET.ParseError as exc:
         print(f"Skipping invalid XML ({pom_label}): {exc}", file=sys.stderr)
         return []
 
+    props = _read_properties(root)
     parent_map = {c: p for p in root.iter() for c in p}
     deps: list[dict[str, str]] = []
     for elem in root.iter():
@@ -86,23 +113,25 @@ def parse_dependencies(pom_text: str, *, pom_label: str = "pom.xml") -> list[dic
             continue
         group_id = _child_text(elem, "groupId")
         artifact_id = _child_text(elem, "artifactId")
-        version = _child_text(elem, "version")
-        if not group_id or not artifact_id or not version:
+        raw_version = _child_text(elem, "version")
+        if not group_id or not artifact_id or not raw_version:
             continue
-        if version.startswith("${") and version.endswith("}"):
+        version, prop_name = _resolve_version(raw_version, props)
+        if version is None:
             print(
-                f"Skipping property version {group_id}:{artifact_id} "
-                f"{version} in {pom_label}",
+                f"Skipping unresolved property version {group_id}:{artifact_id} "
+                f"{raw_version} in {pom_label}",
                 file=sys.stderr,
             )
             continue
-        deps.append(
-            {
-                "groupId": group_id,
-                "artifactId": artifact_id,
-                "version": version,
-            }
-        )
+        dep: dict[str, str] = {
+            "groupId": group_id,
+            "artifactId": artifact_id,
+            "version": version,
+        }
+        if prop_name:
+            dep["versionProperty"] = prop_name
+        deps.append(dep)
     return deps
 
 
@@ -141,6 +170,8 @@ def match_remediations(
             }
             if rem.get("tier"):
                 match["tier"] = rem["tier"]
+            if dep.get("versionProperty"):
+                match["versionProperty"] = dep["versionProperty"]
             matches.append(match)
     return matches
 

@@ -41,13 +41,33 @@ SAMPLE_CATALOG = [
 
 
 class ParseDependenciesTests(unittest.TestCase):
-    def test_parses_inline_versions_skips_property_and_plugin(self) -> None:
+    def test_parses_inline_versions_skips_unresolved_and_plugin(self) -> None:
         deps = scan_poms.parse_dependencies(FIXTURE_POM, pom_label="fixture")
         coords = {(d["groupId"], d["artifactId"], d["version"]) for d in deps}
         self.assertIn(("commons-io", "commons-io", "2.11.0"), coords)
         self.assertIn(("org.springframework", "spring-core", "5.3.18"), coords)
-        # Property version and missing version skipped; plugin dep skipped.
+        # Unresolved ${skipped.version} and missing version skipped; plugin dep skipped.
         self.assertEqual(len(deps), 2)
+
+    def test_resolves_property_versions(self) -> None:
+        text = """
+        <project>
+          <properties>
+            <jackson.version>2.13.4</jackson.version>
+          </properties>
+          <dependencies>
+            <dependency>
+              <groupId>com.fasterxml.jackson.core</groupId>
+              <artifactId>jackson-databind</artifactId>
+              <version>${jackson.version}</version>
+            </dependency>
+          </dependencies>
+        </project>
+        """
+        deps = scan_poms.parse_dependencies(text)
+        self.assertEqual(len(deps), 1)
+        self.assertEqual(deps[0]["version"], "2.13.4")
+        self.assertEqual(deps[0]["versionProperty"], "jackson.version")
 
     def test_no_namespace_pom(self) -> None:
         text = """
@@ -80,6 +100,39 @@ class MatchAndApplyTests(unittest.TestCase):
             versions = {(d["groupId"], d["artifactId"], d["version"]) for d in deps}
             self.assertIn(("commons-io", "commons-io", "2.11.0.redhat-00001"), versions)
             self.assertIn(("org.springframework", "spring-core", "5.3.18.rhlw-00001"), versions)
+
+    def test_apply_property_version(self) -> None:
+        text = """
+        <project>
+          <properties>
+            <jackson.version>2.13.4</jackson.version>
+          </properties>
+          <dependencies>
+            <dependency>
+              <groupId>com.fasterxml.jackson.core</groupId>
+              <artifactId>jackson-databind</artifactId>
+              <version>${jackson.version}</version>
+            </dependency>
+          </dependencies>
+        </project>
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pom.xml").write_text(text, encoding="utf-8")
+            catalog = [
+                {
+                    "groupId": "com.fasterxml.jackson.core",
+                    "artifactId": "jackson-databind",
+                    "fromVersion": "2.13.4",
+                    "toVersion": "2.13.4.rhlw-00001",
+                }
+            ]
+            matches = scan_poms.match_remediations(root, catalog, set())
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0]["versionProperty"], "jackson.version")
+            self.assertTrue(apply_bumps.apply_match(root, matches[0]))
+            updated = (root / "pom.xml").read_text(encoding="utf-8")
+            self.assertIn("<jackson.version>2.13.4.rhlw-00001</jackson.version>", updated)
 
     def test_apply_fails_on_version_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

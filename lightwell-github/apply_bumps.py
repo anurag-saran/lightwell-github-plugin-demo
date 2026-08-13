@@ -27,6 +27,12 @@ def dependency_block_pattern(group_id: str, artifact_id: str, from_version: str)
     )
 
 
+def property_pattern(prop_name: str, from_version: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(<{re.escape(prop_name)}>){re.escape(from_version)}(</{re.escape(prop_name)}>)"
+    )
+
+
 def apply_match(root: Path, match: dict[str, Any]) -> bool:
     pom_path = root / match["pom"]
     if not pom_path.is_file():
@@ -40,7 +46,14 @@ def apply_match(root: Path, match: dict[str, Any]) -> bool:
         "artifactId": match["artifactId"],
         "version": match["fromVersion"],
     }
-    if expected not in deps:
+    # Allow versionProperty extras on the parsed dep.
+    found = any(
+        d["groupId"] == expected["groupId"]
+        and d["artifactId"] == expected["artifactId"]
+        and d["version"] == expected["version"]
+        for d in deps
+    )
+    if not found:
         print(
             f"No bump applied for {match['groupId']}:{match['artifactId']} "
             f"{match['fromVersion']} in {match['pom']}",
@@ -48,16 +61,26 @@ def apply_match(root: Path, match: dict[str, Any]) -> bool:
         )
         return False
 
-    pattern = dependency_block_pattern(
-        match["groupId"], match["artifactId"], match["fromVersion"]
-    )
-    new_text, count = pattern.subn(
-        rf"\g<1>{match['toVersion']}\g<2>", text, count=1
-    )
+    prop = match.get("versionProperty")
+    if prop:
+        pattern = property_pattern(prop, match["fromVersion"])
+        new_text, count = pattern.subn(
+            rf"\g<1>{match['toVersion']}\g<2>", text, count=1
+        )
+        where = f"property {prop}"
+    else:
+        pattern = dependency_block_pattern(
+            match["groupId"], match["artifactId"], match["fromVersion"]
+        )
+        new_text, count = pattern.subn(
+            rf"\g<1>{match['toVersion']}\g<2>", text, count=1
+        )
+        where = "dependency version"
+
     if count != 1:
         print(
-            f"Failed surgical replace for {match['groupId']}:{match['artifactId']} "
-            f"in {match['pom']}",
+            f"Failed surgical replace ({where}) for "
+            f"{match['groupId']}:{match['artifactId']} in {match['pom']}",
             file=sys.stderr,
         )
         return False
@@ -67,6 +90,7 @@ def apply_match(root: Path, match: dict[str, Any]) -> bool:
         f"Updated {match['pom']}: "
         f"{match['groupId']}:{match['artifactId']} "
         f"{match['fromVersion']} -> {match['toVersion']}"
+        + (f" via ${{{prop}}}" if prop else "")
     )
     return True
 
@@ -104,8 +128,26 @@ def main() -> int:
         print("No matches to apply.")
         return 0
 
+    # Deduplicate property bumps (shared spring.version etc.) — apply once per
+    # (pom, property, from→to); still apply each unique GAV inline bump.
+    seen_props: set[tuple[str, str, str, str]] = set()
     ok = True
     for match in matches:
+        prop = match.get("versionProperty")
+        if prop:
+            key = (
+                match["pom"],
+                prop,
+                match["fromVersion"],
+                match["toVersion"],
+            )
+            if key in seen_props:
+                print(
+                    f"Skip duplicate property bump {prop} "
+                    f"({match['groupId']}:{match['artifactId']})"
+                )
+                continue
+            seen_props.add(key)
         if not apply_match(root, match):
             ok = False
     return 0 if ok else 1
