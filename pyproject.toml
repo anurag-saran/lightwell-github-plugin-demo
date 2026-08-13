@@ -1,0 +1,9 @@
+[project]
+name = "lightwell-github-plugin-demo"
+version = "0.1.0"
+description = "External Lightwell remediation plugin for Maven apps"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -10,13 +10,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
-def dependency_block_pattern(group_id: str, artifact_id: str) -> re.Pattern[str]:
+from scan_poms import parse_dependencies  # noqa: E402
+
+
+def dependency_block_pattern(group_id: str, artifact_id: str, from_version: str) -> re.Pattern[str]:
     return re.compile(
         rf"(<dependency>\s*"
         rf"<groupId>{re.escape(group_id)}</groupId>\s*"
         rf"<artifactId>{re.escape(artifact_id)}</artifactId>\s*"
-        rf"<version>)([^<]+)(</version>)",
+        rf"<version>){re.escape(from_version)}(</version>)",
         re.DOTALL,
     )
 
@@ -28,22 +34,30 @@ def apply_match(root: Path, match: dict[str, Any]) -> bool:
         return False
 
     text = pom_path.read_text(encoding="utf-8")
-    pattern = dependency_block_pattern(match["groupId"], match["artifactId"])
-    found = False
-
-    def replacer(m: re.Match[str]) -> str:
-        nonlocal found
-        current = m.group(2)
-        if current != match["fromVersion"]:
-            return m.group(0)
-        found = True
-        return f"{m.group(1)}{match['toVersion']}{m.group(3)}"
-
-    new_text, count = pattern.subn(replacer, text, count=1)
-    if count == 0 or not found:
+    deps = parse_dependencies(text, pom_label=match["pom"])
+    expected = {
+        "groupId": match["groupId"],
+        "artifactId": match["artifactId"],
+        "version": match["fromVersion"],
+    }
+    if expected not in deps:
         print(
             f"No bump applied for {match['groupId']}:{match['artifactId']} "
             f"{match['fromVersion']} in {match['pom']}",
+            file=sys.stderr,
+        )
+        return False
+
+    pattern = dependency_block_pattern(
+        match["groupId"], match["artifactId"], match["fromVersion"]
+    )
+    new_text, count = pattern.subn(
+        rf"\g<1>{match['toVersion']}\g<2>", text, count=1
+    )
+    if count != 1:
+        print(
+            f"Failed surgical replace for {match['groupId']}:{match['artifactId']} "
+            f"in {match['pom']}",
             file=sys.stderr,
         )
         return False

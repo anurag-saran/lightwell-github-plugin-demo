@@ -28,7 +28,7 @@ DEFAULT_REPOS: dict[str, str] = {
 
 HREF_DIR_RE = re.compile(r'href="\./([^"/]+)/"')
 RHLW_VERSION_RE = re.compile(r"^(?P<base>.+)\.rhlw-(?P<build>\d+)$")
-USER_AGENT = "mta-openwire-demo-lightwell-catalog-sync/1.0"
+USER_AGENT = "lightwell-github-plugin-catalog-sync/1.0"
 
 
 def fetch_text(url: str, timeout: float = 30.0) -> str:

@@ -5,23 +5,49 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-DEPENDENCY_RE = re.compile(
-    r"<dependency>\s*"
-    r"<groupId>(?P<groupId>[^<]+)</groupId>\s*"
-    r"<artifactId>(?P<artifactId>[^<]+)</artifactId>\s*"
-    r"(?:<version>(?P<version>[^<]+)</version>)?",
-    re.DOTALL,
-)
+REQUIRED_REMEDIATION_KEYS = {
+    "groupId",
+    "artifactId",
+    "fromVersion",
+    "toVersion",
+}
+
+
+def _local_tag(tag: str) -> str:
+    if tag.startswith("{"):
+        return tag.split("}", 1)[1]
+    return tag
+
+
+def _child_text(parent: ET.Element, name: str) -> str | None:
+    for child in parent:
+        if _local_tag(child.tag) == name:
+            return (child.text or "").strip() or None
+    return None
 
 
 def load_catalog(path: Path) -> list[dict[str, str]]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    return data.get("remediations", [])
+    remediations = data.get("remediations", [])
+    if not isinstance(remediations, list):
+        raise ValueError("catalog.remediations must be a list")
+    for i, rem in enumerate(remediations):
+        if not isinstance(rem, dict):
+            raise ValueError(f"catalog.remediations[{i}] must be an object")
+        missing = REQUIRED_REMEDIATION_KEYS - set(rem)
+        if missing:
+            raise ValueError(
+                f"catalog.remediations[{i}] missing keys: {sorted(missing)}"
+            )
+        for key in REQUIRED_REMEDIATION_KEYS:
+            if not str(rem.get(key, "")).strip():
+                raise ValueError(f"catalog.remediations[{i}].{key} must be non-empty")
+    return remediations
 
 
 # Tooling / recipe modules in this demo repo are not customer app targets.
@@ -43,20 +69,50 @@ def find_poms(root: Path, exclude_dirs: set[str]) -> list[Path]:
     )
 
 
-def parse_dependencies(pom_text: str) -> list[dict[str, str]]:
+def parse_dependencies(pom_text: str, *, pom_label: str = "pom.xml") -> list[dict[str, str]]:
+    """Parse <dependency> entries via XML. Skips missing versions; warns on ${properties}."""
+    try:
+        root = ET.fromstring(pom_text)
+    except ET.ParseError as exc:
+        print(f"Skipping invalid XML ({pom_label}): {exc}", file=sys.stderr)
+        return []
+
+    parent_map = {c: p for p in root.iter() for c in p}
     deps: list[dict[str, str]] = []
-    for match in DEPENDENCY_RE.finditer(pom_text):
-        version = (match.group("version") or "").strip()
-        if not version:
+    for elem in root.iter():
+        if _local_tag(elem.tag) != "dependency":
+            continue
+        if _under_plugin(elem, parent_map):
+            continue
+        group_id = _child_text(elem, "groupId")
+        artifact_id = _child_text(elem, "artifactId")
+        version = _child_text(elem, "version")
+        if not group_id or not artifact_id or not version:
+            continue
+        if version.startswith("${") and version.endswith("}"):
+            print(
+                f"Skipping property version {group_id}:{artifact_id} "
+                f"{version} in {pom_label}",
+                file=sys.stderr,
+            )
             continue
         deps.append(
             {
-                "groupId": match.group("groupId").strip(),
-                "artifactId": match.group("artifactId").strip(),
+                "groupId": group_id,
+                "artifactId": artifact_id,
                 "version": version,
             }
         )
     return deps
+
+
+def _under_plugin(elem: ET.Element, parent_map: dict[ET.Element, ET.Element]) -> bool:
+    cur: ET.Element | None = elem
+    while cur is not None:
+        if _local_tag(cur.tag) in {"plugin", "plugins", "pluginManagement"}:
+            return True
+        cur = parent_map.get(cur)
+    return False
 
 
 def match_remediations(
@@ -70,7 +126,7 @@ def match_remediations(
     matches: list[dict[str, Any]] = []
     for pom in find_poms(root, exclude_dirs):
         rel = pom.relative_to(root).as_posix()
-        for dep in parse_dependencies(pom.read_text(encoding="utf-8")):
+        for dep in parse_dependencies(pom.read_text(encoding="utf-8"), pom_label=rel):
             key = (dep["groupId"], dep["artifactId"], dep["version"])
             rem = index.get(key)
             if not rem:
@@ -95,7 +151,7 @@ def render_report(matches: list[dict[str, Any]]) -> str:
         "",
         "This scan found Maven dependencies that have a matching Lightwell remediated version.",
         "",
-        "**No pull request has been opened yet.** Review the proposed changes below, then open a PR with the button.",
+        "The **Lightwell Remediate** workflow opens or updates a PR on the target app automatically when matches are found.",
         "",
     ]
     if not matches:
@@ -133,12 +189,11 @@ def render_report(matches: list[dict[str, Any]]) -> str:
     lines.extend(
         [
             "",
-            "## Next step (open PR)",
+            "## What happens next",
             "",
-            "1. Open **Actions** → **Lightwell Open PR**",
-            "2. Click **Run workflow**",
-            "3. Set `confirm` to `open-pr`",
-            "4. Run the workflow — that creates the branch and pull request",
+            "1. The workflow pushes branch `lightwell/remediations` (bot-owned, `--force-with-lease`).",
+            "2. It opens or updates a labeled PR on the target app — review and **merge** or **close**.",
+            "3. The available-updates badge is published on branch `lightwell/badge` (not `main`).",
             "",
         ]
     )
@@ -190,7 +245,11 @@ def main() -> int:
         return 1
 
     exclude_dirs = set(DEFAULT_EXCLUDE_DIR_NAMES) | set(args.exclude_dir)
-    catalog = load_catalog(catalog_path)
+    try:
+        catalog = load_catalog(catalog_path)
+    except (json.JSONDecodeError, ValueError) as exc:
+        print(f"Invalid catalog {catalog_path}: {exc}", file=sys.stderr)
+        return 1
     matches = match_remediations(root, catalog, exclude_dirs)
     report = render_report(matches)
 

@@ -1,0 +1,47 @@
+name: Lightwell CI
+
+on:
+  push:
+    paths:
+      - "lightwell-github/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/lightwell-ci.yml"
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly catalog drift check (same cadence as remediate)
+    - cron: "0 10 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Ruff check
+        run: |
+          pip install ruff
+          ruff check lightwell-github tests
+
+  catalog-check:
+    name: Catalog drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: sync_catalog.py --check
+        run: python3 lightwell-github/sync_catalog.py --catalog lightwell-github/catalog.json --check
+        continue-on-error: true
+      # Soft-fail: network/index changes should be visible without blocking merges.
+      # Re-run without continue-on-error locally when refreshing the catalog.
