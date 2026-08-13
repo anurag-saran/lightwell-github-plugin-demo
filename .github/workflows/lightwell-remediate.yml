@@ -113,6 +113,7 @@ jobs:
             --out lightwell-badge.json
 
           git fetch origin main
+          git fetch origin "$BRANCH" || true
           git switch main
           git pull --ff-only origin main
           git switch -C "$BRANCH"
@@ -126,7 +127,11 @@ jobs:
             echo "Badge already up to date on $BRANCH."
           else
             git commit -m "chore(lightwell): refresh available library updates badge"
-            git push -u origin "$BRANCH" --force-with-lease
+            if ! git push -u origin "$BRANCH" --force-with-lease; then
+              echo "force-with-lease rejected; retrying after re-fetch of $BRANCH"
+              git fetch origin "$BRANCH"
+              git push -u origin "$BRANCH" --force-with-lease
+            fi
             echo "Published lightwell-badge.json to $BRANCH (${{ steps.scan.outputs.match_count }} available)."
           fi
           echo "Point shields.io at raw.githubusercontent.com/<owner>/<repo>/lightwell/badge/lightwell-badge.json"
