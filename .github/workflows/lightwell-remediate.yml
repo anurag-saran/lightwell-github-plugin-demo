@@ -176,6 +176,9 @@ jobs:
           } > /tmp/pr-body.md
 
           git fetch origin main
+          # Refresh remote tip so --force-with-lease has current lease info
+          # (stale remediations branch after a closed PR otherwise rejects the push).
+          git fetch origin "$BRANCH" || true
           git switch main
           git pull --ff-only origin main
           git switch -C "$BRANCH"
@@ -191,7 +194,11 @@ jobs:
           fi
 
           git commit -m "$TITLE"
-          git push -u origin "$BRANCH" --force-with-lease
+          if ! git push -u origin "$BRANCH" --force-with-lease; then
+            echo "force-with-lease rejected; retrying after re-fetch of $BRANCH"
+            git fetch origin "$BRANCH"
+            git push -u origin "$BRANCH" --force-with-lease
+          fi
 
           EXISTING_PR=$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
           gh label create lightwell --repo "$TARGET_REPO" --description "Lightwell remediation proposals" --color "0E4429" 2>/dev/null || true
