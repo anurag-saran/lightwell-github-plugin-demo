@@ -2,6 +2,11 @@
 
 Plugin that scans a **target app repo** for Lightwell-matching libraries and opens a PR there.
 
+The remediations catalog is built only from the **public** Lightwell console demos
+([java-remediated-demo](https://console.redhat.com/lightwell/demo/java-remediated-demo),
+[java-validated-demo](https://console.redhat.com/lightwell/demo/java-validated-demo)) via the
+unauthenticated `public-lightwell-demo` Maven feeds. Refresh with `sync_catalog.py`.
+
 The app repo (e.g. [`payments-service`](https://github.com/anurag-saran/payments-service)) is a normal Maven app — **no** Lightwell plugin code required there. (That app may also host upgrade-delta PaC for live grading; remediations still open from this plugin repo.)
 
 ## Contents
