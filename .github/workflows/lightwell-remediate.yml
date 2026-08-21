@@ -1,16 +1,22 @@
 name: Lightwell Remediate
 
-# Runs in the plugin repo and opens PRs on a target app repo (no workflows required there).
+# Runs in the plugin repo and opens PRs on target payment app repos
+# (https://github.com/anurag-saran/lightwell-github-plugin-demo).
 # Badge updates go to the bot-owned lightwell/badge branch (never main).
 # Remediation commits use --force-with-lease on lightwell/remediations.
 on:
   workflow_dispatch:
     inputs:
       target_repo:
-        description: App repo to remediate (owner/name)
+        description: App repo to remediate (owner/name). Schedule/push covers all four.
         required: true
         default: anurag-saran/payments-service
-        type: string
+        type: choice
+        options:
+          - anurag-saran/payments-service
+          - anurag-saran/payments-service-notests
+          - anurag-saran/payments-service-grade-c
+          - anurag-saran/payments-service-grade-f
       dry_run:
         description: Scan and summarize only (no push/PR)
         required: false
@@ -28,24 +34,35 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: lightwell-remediate-${{ github.event.inputs.target_repo || 'anurag-saran/payments-service' }}
-  cancel-in-progress: true
-
 jobs:
   remediate:
-    name: Scan target app and open remediation PR
+    name: Remediate ${{ matrix.target_repo }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target_repo:
+          - anurag-saran/payments-service
+          - anurag-saran/payments-service-notests
+          - anurag-saran/payments-service-grade-c
+          - anurag-saran/payments-service-grade-f
+    concurrency:
+      group: lightwell-remediate-${{ matrix.target_repo }}
+      cancel-in-progress: true
+    # Manual runs only execute the selected target; schedule/push hit all four.
+    if: >-
+      github.event_name != 'workflow_dispatch'
+      || matrix.target_repo == github.event.inputs.target_repo
     env:
-      TARGET_REPO: ${{ github.event.inputs.target_repo || 'anurag-saran/payments-service' }}
+      TARGET_REPO: ${{ matrix.target_repo }}
       DRY_RUN: ${{ github.event.inputs.dry_run || false }}
-      # Fine-grained PAT preferred: Contents (read/write) + Pull requests on the target app only.
+      # Fine-grained PAT: Contents + Pull requests on all four payment app repos.
       GH_TOKEN: ${{ secrets.LIGHTWELL_REPO_TOKEN }}
     steps:
       - name: Require LIGHTWELL_REPO_TOKEN
         run: |
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::Set repository secret LIGHTWELL_REPO_TOKEN (fine-grained PAT: Contents + Pull requests on the target app)."
+            echo "::error::Set repository secret LIGHTWELL_REPO_TOKEN (fine-grained PAT: Contents + Pull requests on all payment app targets)."
             exit 1
           fi
 
