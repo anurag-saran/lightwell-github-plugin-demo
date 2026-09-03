@@ -28,6 +28,7 @@ on:
     paths:
       - "lightwell-github/catalog.json"
       - "lightwell-github/scan_poms.py"
+      - "lightwell-github/osv_cves.py"
       - "lightwell-github/write_badge.py"
       - ".github/workflows/lightwell-remediate.yml"
 
@@ -50,12 +51,12 @@ jobs:
       group: lightwell-remediate-${{ matrix.target_repo }}
       cancel-in-progress: true
     # Manual runs only execute the selected target; schedule/push hit all four.
-    if: >-
-      github.event_name != 'workflow_dispatch'
-      || matrix.target_repo == github.event.inputs.target_repo
+    # Use the `inputs` context (empty on push/schedule) — do NOT read
+    # github.event.inputs.* on non-dispatch events or the run fails with 0 jobs.
+    if: ${{ github.event_name != 'workflow_dispatch' || matrix.target_repo == inputs.target_repo }}
     env:
       TARGET_REPO: ${{ matrix.target_repo }}
-      DRY_RUN: ${{ github.event.inputs.dry_run || false }}
+      DRY_RUN: ${{ inputs.dry_run || false }}
       # Fine-grained PAT: Contents + Pull requests on all four payment app repos.
       GH_TOKEN: ${{ secrets.LIGHTWELL_REPO_TOKEN }}
     steps:
