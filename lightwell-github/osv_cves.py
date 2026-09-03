@@ -273,6 +273,66 @@ def load_osv_index(
     return records
 
 
+def highest_osv_fixed(
+    osv_records: list[dict[str, Any]],
+    *,
+    group_id: str,
+    artifact_id: str,
+    from_version: str | None = None,
+) -> str | None:
+    """Highest Lightwell ``fixed`` build for a GAV across OSV advisories.
+
+    When ``from_version`` is set (e.g. ``5.3.18``), only candidates that are
+    rebuilds of that upstream base are considered.
+    """
+    best: str | None = None
+    for doc in osv_records:
+        for pkg, fixed in osv_fixed_events(doc):
+            if not package_matches_gav(pkg, group_id, artifact_id):
+                continue
+            if not is_remediated_version(fixed):
+                continue
+            if from_version:
+                prefix = f"{from_version}."
+                if not (fixed == from_version or fixed.startswith(prefix)):
+                    continue
+            if best is None or version_key(fixed) > version_key(best):
+                best = fixed
+    return best
+
+
+def elevate_to_highest_osv_fixed(
+    rows: list[dict[str, Any]],
+    osv_records: list[dict[str, Any]],
+    *,
+    version_key_name: str = "toVersion",
+) -> int:
+    """Bump each row's target build to the highest OSV ``fixed`` when newer.
+
+    Returns the number of rows whose target version changed. Used so the plugin
+    always proposes e.g. ``5.3.18.rhlw-00010`` even if the Maven index still
+    lists an older suffix such as ``…-00003``.
+    """
+    changed = 0
+    if not osv_records:
+        return 0
+    for row in rows:
+        current = str(row.get(version_key_name) or "")
+        highest = highest_osv_fixed(
+            osv_records,
+            group_id=str(row.get("groupId") or ""),
+            artifact_id=str(row.get("artifactId") or ""),
+            from_version=str(row.get("fromVersion") or "") or None,
+        )
+        if not highest:
+            continue
+        if not current or version_key(highest) > version_key(current):
+            if current != highest:
+                row[version_key_name] = highest
+                changed += 1
+    return changed
+
+
 def cves_fixed_by_build(
     osv_records: list[dict[str, Any]],
     *,
@@ -323,7 +383,8 @@ def attach_cves_to_matches(
     matches: list[dict[str, Any]],
     osv_records: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Mutate matches in place: add ``cves``, ``max_cvss``, ``max_severity``; sort by severity."""
+    """Mutate matches in place: elevate target build, add CVEs, sort by severity."""
+    elevate_to_highest_osv_fixed(matches, osv_records)
     for m in matches:
         details = cves_fixed_by_build(
             osv_records,

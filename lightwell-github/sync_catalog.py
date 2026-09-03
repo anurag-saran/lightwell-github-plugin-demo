@@ -17,6 +17,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import osv_cves
+
 DEFAULT_REPOS: dict[str, str] = {
     "validated": (
         "https://packages.redhat.com/lightwell/public-lightwell-demo/java/validated/"
@@ -25,6 +27,8 @@ DEFAULT_REPOS: dict[str, str] = {
         "https://packages.redhat.com/lightwell/public-lightwell-demo/java/remediated/"
     ),
 }
+
+DEFAULT_OSV_URL = osv_cves.DEFAULT_OSV_URL
 
 HREF_DIR_RE = re.compile(r'href="\./([^"/]+)/"')
 RHLW_VERSION_RE = re.compile(r"^(?P<base>.+)\.rhlw-(?P<build>\d+)$")
@@ -61,6 +65,28 @@ def parse_rhlw(version: str) -> tuple[str, str] | None:
     return match.group("base"), match.group("build")
 
 
+def rhlw_build_num(version: str) -> int | None:
+    """Numeric .rhlw-NNNN build for ordering (00010 > 00003). None if not rhlw."""
+    parsed = parse_rhlw(version)
+    if not parsed:
+        return None
+    try:
+        return int(parsed[1], 10)
+    except ValueError:
+        return None
+
+
+def is_newer_rhlw(candidate: str, current: str) -> bool:
+    """True when candidate is a strictly newer Lightwell rebuild than current."""
+    c_num = rhlw_build_num(candidate)
+    cur_num = rhlw_build_num(current)
+    if c_num is not None and cur_num is not None:
+        if c_num != cur_num:
+            return c_num > cur_num
+        # Same build number — fall through to full version string (rare).
+    return candidate > current
+
+
 def crawl_tier(tier: str, base_url: str) -> list[dict[str, str]]:
     """Return remediations found under one Maven repository root."""
     found: list[dict[str, str]] = []
@@ -84,17 +110,17 @@ def crawl_tier(tier: str, base_url: str) -> list[dict[str, str]]:
         if version_dirs and len(path_parts) >= 2:
             artifact_id = path_parts[-1]
             group_id = ".".join(path_parts[:-1])
-            # Prefer highest .rhlw-NNNNN build per upstream base version.
-            best: dict[str, tuple[str, str]] = {}
+            # Always pick the highest numeric .rhlw-NNNN build per upstream base.
+            best: dict[str, str] = {}
             for version in version_dirs:
                 parsed = parse_rhlw(version)
                 if not parsed:
                     continue
-                base, build = parsed
+                base, _build = parsed
                 prev = best.get(base)
-                if prev is None or build > prev[1]:
-                    best[base] = (version, build)
-            for from_version, (to_version, _) in sorted(best.items()):
+                if prev is None or is_newer_rhlw(version, prev):
+                    best[base] = version
+            for from_version, to_version in sorted(best.items()):
                 found.append(
                     {
                         "groupId": group_id,
@@ -118,7 +144,10 @@ def crawl_tier(tier: str, base_url: str) -> list[dict[str, str]]:
 
 
 def merge_remediations(entries: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Collapse duplicates across tiers; keep one row per GAV fromVersion."""
+    """Collapse duplicates across tiers; keep one row per GAV fromVersion.
+
+    Always retains the highest .rhlw build number for that base version.
+    """
     merged: dict[tuple[str, str, str], dict[str, Any]] = {}
     for entry in entries:
         key = (entry["groupId"], entry["artifactId"], entry["fromVersion"])
@@ -127,8 +156,7 @@ def merge_remediations(entries: list[dict[str, str]]) -> list[dict[str, str]]:
             merged[key] = dict(entry)
             continue
 
-        # Prefer the lexicographically greater toVersion (newer rhlw build).
-        if entry["toVersion"] > existing["toVersion"]:
+        if is_newer_rhlw(entry["toVersion"], existing["toVersion"]):
             tiers = sorted(
                 {
                     *existing.get("tier", "").split("+"),
@@ -167,15 +195,53 @@ def merge_remediations(entries: list[dict[str, str]]) -> list[dict[str, str]]:
     )
 
 
-def build_catalog(repos: dict[str, str]) -> dict[str, Any]:
+def elevate_remediations_from_osv(
+    remediations: list[dict[str, Any]],
+    *,
+    osv_url: str | None = DEFAULT_OSV_URL,
+    osv_dir: Path | None = None,
+    fetch: bool = True,
+) -> list[dict[str, Any]]:
+    """Prefer the highest OSV ``fixed`` build over a stale Maven index suffix."""
+    records = osv_cves.load_osv_index(
+        osv_dir=osv_dir,
+        osv_url=osv_url if fetch else None,
+        fetch=fetch,
+    )
+    if not records:
+        print("No OSV advisories loaded — keeping Maven index versions", file=sys.stderr)
+        return remediations
+    bumped = osv_cves.elevate_to_highest_osv_fixed(remediations, records)
+    if bumped:
+        print(
+            f"Elevated {bumped} remediation(s) to highest OSV fixed build",
+            file=sys.stderr,
+        )
+    return remediations
+
+
+def build_catalog(
+    repos: dict[str, str],
+    *,
+    osv_url: str | None = DEFAULT_OSV_URL,
+    osv_dir: Path | None = None,
+    fetch_osv: bool = True,
+) -> dict[str, Any]:
     all_entries: list[dict[str, str]] = []
     for tier, url in repos.items():
         print(f"Crawling {tier}: {url}", file=sys.stderr)
         tier_entries = crawl_tier(tier, url)
         print(f"  found {len(tier_entries)} artifact version(s)", file=sys.stderr)
         all_entries.extend(tier_entries)
+    remediations = merge_remediations(all_entries)
+    elevate_remediations_from_osv(
+        remediations,
+        osv_url=osv_url,
+        osv_dir=osv_dir,
+        fetch=fetch_osv,
+    )
     return {
-        "remediations": merge_remediations(all_entries),
+        "remediations": remediations,
         "repositories": repos,
     }
 
@@ -203,10 +269,31 @@ def main() -> int:
         action="store_true",
         help="Print new catalog JSON to stdout; do not write",
     )
+    parser.add_argument(
+        "--osv-url",
+        default=DEFAULT_OSV_URL,
+        help="Lightwell OSV remediated index (used to pick highest .rhlw fixed)",
+    )
+    parser.add_argument(
+        "--osv-dir",
+        type=Path,
+        default=None,
+        help="Local OSV advisory directory (optional; merged with --osv-url)",
+    )
+    parser.add_argument(
+        "--no-osv",
+        action="store_true",
+        help="Do not elevate catalog targets from OSV fixed versions",
+    )
     args = parser.parse_args()
 
     catalog_path = args.catalog
-    new_data = build_catalog(DEFAULT_REPOS)
+    new_data = build_catalog(
+        DEFAULT_REPOS,
+        osv_url=None if args.no_osv else args.osv_url,
+        osv_dir=None if args.no_osv else args.osv_dir,
+        fetch_osv=not args.no_osv,
+    )
     new_text = json.dumps(new_data, indent=2) + "\n"
 
     old_text = ""

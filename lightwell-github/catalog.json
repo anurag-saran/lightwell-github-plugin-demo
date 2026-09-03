@@ -28,7 +28,7 @@
       "groupId": "org.springframework",
       "artifactId": "spring-core",
       "fromVersion": "5.3.18",
-      "toVersion": "5.3.18.rhlw-00003",
+      "toVersion": "5.3.18.rhlw-00010",
       "tier": "remediated",
       "summary": "Lightwell remediated rebuild of spring-core 5.3.18"
     },

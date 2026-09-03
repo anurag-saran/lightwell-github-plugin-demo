@@ -89,6 +89,13 @@ Skip CVE enrichment entirely: add `--no-osv`.
 The remediation PR / `report.md` lists each bump with **CVEs fixed** and **CVSS**
 severity (from Lightwell OSV). Matches are sorted highest severity first.
 
+Target builds always use the **highest** `.rhlw-NNNN` (or `.redhat-NNNN`) suffix
+known for that upstream version: `sync_catalog.py` picks the max from the Maven
+index **and** elevates further when OSV `fixed` events cite a newer suffix
+(e.g. Maven still lists `5.3.18.rhlw-00003` but OSV fixes at `5.3.18.rhlw-00010`).
+Scan-time enrichment applies the same elevation so remediations stay current even
+if `catalog.json` lags.
+
 ## Tests
 
 ```bash

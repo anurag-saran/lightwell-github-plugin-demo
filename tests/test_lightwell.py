@@ -302,6 +302,51 @@ class OsvCveTests(unittest.TestCase):
         self.assertEqual(matches[2]["cves"][0]["id"], "CVE-2099-0001")
         self.assertLess(matches[2]["max_cvss"], 4.0)
 
+    def test_elevate_to_highest_osv_fixed_build(self) -> None:
+        """Maven index may lag; OSV fixed (e.g. rhlw-00010) wins."""
+        matches = [
+            {
+                "pom": "pom.xml",
+                "groupId": "org.springframework",
+                "artifactId": "spring-core",
+                "fromVersion": "5.3.18",
+                "toVersion": "5.3.18.rhlw-00003",
+            }
+        ]
+        records = [
+            {
+                "id": "x_RHLW-CVE-2025-41249-5.3.18",
+                "aliases": ["CVE-2025-41249"],
+                "severity": [
+                    {
+                        "type": "CVSS_V3",
+                        "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+                    }
+                ],
+                "affected": [
+                    {
+                        "package": {
+                            "ecosystem": "Maven",
+                            "name": "org.springframework:spring-core",
+                        },
+                        "ranges": [
+                            {
+                                "type": "ECOSYSTEM",
+                                "events": [
+                                    {"introduced": "0"},
+                                    {"fixed": "5.3.18.rhlw-00010"},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        osv_cves.attach_cves_to_matches(matches, records)
+        self.assertEqual(matches[0]["toVersion"], "5.3.18.rhlw-00010")
+        self.assertEqual(matches[0]["cves"][0]["id"], "CVE-2025-41249")
+        self.assertEqual(matches[0]["cves"][0]["fixed_in"], "5.3.18.rhlw-00010")
+
     def test_no_invented_cves_without_osv(self) -> None:
         matches = [
             {
@@ -315,6 +360,52 @@ class OsvCveTests(unittest.TestCase):
         osv_cves.attach_cves_to_matches(matches, [])
         self.assertEqual(matches[0]["cves"], [])
         self.assertIsNone(matches[0]["max_cvss"])
+
+
+class SyncCatalogVersionOrderTests(unittest.TestCase):
+    def test_numeric_rhlw_build_beats_lexicographic_trap(self) -> None:
+        import sync_catalog
+
+        # Equal-width padded suffixes can look fine as strings; uneven widths do not:
+        # "0009" > "00010" lexicographically, but build 9 < 10.
+        self.assertTrue("5.3.18.rhlw-0009" > "5.3.18.rhlw-00010")
+        self.assertTrue(
+            sync_catalog.is_newer_rhlw(
+                "5.3.18.rhlw-00010", "5.3.18.rhlw-0009"
+            )
+        )
+        self.assertTrue(
+            sync_catalog.is_newer_rhlw(
+                "5.3.18.rhlw-00010", "5.3.18.rhlw-00003"
+            )
+        )
+        self.assertEqual(sync_catalog.rhlw_build_num("5.3.18.rhlw-00010"), 10)
+
+    def test_merge_keeps_highest_numeric_build(self) -> None:
+        import sync_catalog
+
+        merged = sync_catalog.merge_remediations(
+            [
+                {
+                    "groupId": "org.springframework",
+                    "artifactId": "spring-core",
+                    "fromVersion": "5.3.18",
+                    "toVersion": "5.3.18.rhlw-00003",
+                    "tier": "remediated",
+                    "summary": "older",
+                },
+                {
+                    "groupId": "org.springframework",
+                    "artifactId": "spring-core",
+                    "fromVersion": "5.3.18",
+                    "toVersion": "5.3.18.rhlw-00010",
+                    "tier": "remediated",
+                    "summary": "newer",
+                },
+            ]
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["toVersion"], "5.3.18.rhlw-00010")
 
 
 if __name__ == "__main__":

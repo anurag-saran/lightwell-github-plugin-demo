@@ -360,7 +360,15 @@ def main() -> int:
             print(f"Loaded {len(records)} Lightwell OSV advisory(ies) for CVE join")
         else:
             print("No OSV advisories loaded — matches will have empty CVE lists")
+        before = {id(m): m.get("toVersion") for m in matches}
         osv_cves.attach_cves_to_matches(matches, records)
+        elevated = sum(
+            1 for m in matches if m.get("toVersion") != before.get(id(m))
+        )
+        if elevated:
+            print(
+                f"Elevated {elevated} match(es) to highest OSV .rhlw fixed build"
+            )
     else:
         for m in matches:
             m.setdefault("cves", [])
