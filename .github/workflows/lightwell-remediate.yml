@@ -186,13 +186,15 @@ jobs:
             echo
             echo "Branch \`lightwell/remediations\` is owned by the Lightwell bot (pushed with \`--force-with-lease\`)."
             echo
+            echo "Bumps below include **CVEs fixed** and **CVSS** from Lightwell OSV (sorted by highest severity)."
+            echo
             echo "**Merge** to accept the update, or **close** to reject it."
             echo
             cat /tmp/lightwell-out/report.md
             echo
             echo "## Test plan"
             echo
-            echo "- [ ] Review pom.xml version bumps"
+            echo "- [ ] Review pom.xml version bumps and CVE/CVSS table"
             echo "- [ ] Run \`mvn -q test\` (or project build)"
             echo "- [ ] Confirm Lightwell artifacts resolve in CI"
           } > /tmp/pr-body.md

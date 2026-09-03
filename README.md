@@ -64,7 +64,8 @@ Schedule and catalog pushes remediate **all four** targets in parallel.
 
 | Script | Role |
 |--------|------|
-| `scan_poms.py` | Scan POMs → `matches.json` + `report.md` |
+| `scan_poms.py` | Scan POMs → `matches.json` + `report.md` (joins Lightwell OSV for CVE + CVSS) |
+| `osv_cves.py` | Fetch/load Lightwell OSV advisories; CVSS 3.1 base score; attach to matches |
 | `apply_bumps.py` | Apply version bumps from matches |
 | `write_badge.py` | Write shields.io endpoint JSON |
 | `sync_catalog.py` | Crawl Lightwell Maven indexes → `catalog.json` (`--check` / `--dry-run`) |
@@ -75,6 +76,18 @@ Schedule and catalog pushes remediate **all four** targets in parallel.
 python3 lightwell-github/scan_poms.py --root /path/to/payments-service
 cat lightwell-github/out/report.md
 ```
+
+Offline CVE join (no network), using a local OSV mirror:
+
+```bash
+python3 lightwell-github/scan_poms.py --root /path/to/app \
+  --osv-dir /path/to/osv --offline
+```
+
+Skip CVE enrichment entirely: add `--no-osv`.
+
+The remediation PR / `report.md` lists each bump with **CVEs fixed** and **CVSS**
+severity (from Lightwell OSV). Matches are sorted highest severity first.
 
 ## Tests
 

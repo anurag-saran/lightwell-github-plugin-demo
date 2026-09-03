@@ -14,11 +14,13 @@ PLUGIN = ROOT / "lightwell-github"
 sys.path.insert(0, str(PLUGIN))
 
 import apply_bumps  # noqa: E402
+import osv_cves  # noqa: E402
 import scan_poms  # noqa: E402
 import write_badge  # noqa: E402
 
 
 FIXTURE_POM = (Path(__file__).parent / "fixtures" / "pom.xml").read_text(encoding="utf-8")
+FIXTURE_OSV = Path(__file__).parent / "fixtures" / "osv"
 
 SAMPLE_CATALOG = [
     {
@@ -202,12 +204,117 @@ class ReportTests(unittest.TestCase):
                     "fromVersion": "2.11.0",
                     "toVersion": "2.11.0.rhlw-1",
                     "summary": "",
+                    "cves": [],
+                    "max_cvss": None,
+                    "max_severity": None,
                 }
             ]
         )
         self.assertIn("lightwell/remediations", report)
         self.assertNotIn("confirm=open-pr", report)
         self.assertNotIn("Lightwell Open PR", report)
+        self.assertIn("CVEs fixed", report)
+
+    def test_report_includes_cve_table_and_links(self) -> None:
+        report = scan_poms.render_report(
+            [
+                {
+                    "pom": "pom.xml",
+                    "groupId": "org.springframework",
+                    "artifactId": "spring-core",
+                    "fromVersion": "5.3.18",
+                    "toVersion": "5.3.18.rhlw-00001",
+                    "tier": "remediated",
+                    "summary": "test",
+                    "cves": [
+                        {
+                            "id": "CVE-2023-20863",
+                            "cvss": 6.5,
+                            "severity": "MEDIUM",
+                            "summary": "Spring SpEL DoS.",
+                        }
+                    ],
+                    "max_cvss": 6.5,
+                    "max_severity": "MEDIUM",
+                }
+            ]
+        )
+        self.assertIn("| Library | Bump | Tier | CVEs fixed (CVSS) | Highest |", report)
+        self.assertIn("CVE-2023-20863", report)
+        self.assertIn("6.5", report)
+        self.assertIn("MEDIUM", report)
+        self.assertIn("nvd.nist.gov/vuln/detail/CVE-2023-20863", report)
+
+
+class OsvCveTests(unittest.TestCase):
+    def test_cvss_base_score_known_vectors(self) -> None:
+        # Network DoS vector used by several Lightwell advisories → 7.5
+        score = osv_cves.cvss_v3_base_score(
+            "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+        )
+        self.assertEqual(score, 7.5)
+        self.assertEqual(osv_cves.severity_rating(score), "HIGH")
+
+        score_med = osv_cves.cvss_v3_base_score(
+            "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H"
+        )
+        self.assertEqual(score_med, 6.5)
+        self.assertEqual(osv_cves.severity_rating(score_med), "MEDIUM")
+
+    def test_attach_cves_from_local_osv_and_sort(self) -> None:
+        matches = [
+            {
+                "pom": "pom.xml",
+                "groupId": "commons-io",
+                "artifactId": "commons-io",
+                "fromVersion": "2.11.0",
+                "toVersion": "2.11.0.redhat-00001",
+            },
+            {
+                "pom": "pom.xml",
+                "groupId": "org.springframework",
+                "artifactId": "spring-core",
+                "fromVersion": "5.3.18",
+                "toVersion": "5.3.18.rhlw-00001",
+            },
+            {
+                "pom": "pom.xml",
+                "groupId": "com.jayway.jsonpath",
+                "artifactId": "json-path",
+                "fromVersion": "2.8.0",
+                "toVersion": "2.8.0.rhlw-00001",
+            },
+        ]
+        records = osv_cves.load_osv_records_from_dir(FIXTURE_OSV)
+        self.assertGreaterEqual(len(records), 3)
+        osv_cves.attach_cves_to_matches(matches, records)
+
+        # Sorted by max CVSS desc: json-path 7.5, spring-core 6.5, commons-io low
+        self.assertEqual(matches[0]["artifactId"], "json-path")
+        self.assertEqual(matches[0]["max_cvss"], 7.5)
+        self.assertEqual(matches[0]["cves"][0]["id"], "CVE-2023-51074")
+
+        self.assertEqual(matches[1]["artifactId"], "spring-core")
+        self.assertEqual(matches[1]["max_cvss"], 6.5)
+        self.assertEqual(matches[1]["cves"][0]["id"], "CVE-2023-20863")
+
+        self.assertEqual(matches[2]["artifactId"], "commons-io")
+        self.assertEqual(matches[2]["cves"][0]["id"], "CVE-2099-0001")
+        self.assertLess(matches[2]["max_cvss"], 4.0)
+
+    def test_no_invented_cves_without_osv(self) -> None:
+        matches = [
+            {
+                "pom": "pom.xml",
+                "groupId": "org.springframework",
+                "artifactId": "spring-core",
+                "fromVersion": "5.3.18",
+                "toVersion": "5.3.18.rhlw-00001",
+            }
+        ]
+        osv_cves.attach_cves_to_matches(matches, [])
+        self.assertEqual(matches[0]["cves"], [])
+        self.assertIsNone(matches[0]["max_cvss"])
 
 
 if __name__ == "__main__":

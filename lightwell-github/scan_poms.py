@@ -10,6 +10,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+import osv_cves
+
 REQUIRED_REMEDIATION_KEYS = {
     "groupId",
     "artifactId",
@@ -176,11 +178,21 @@ def match_remediations(
     return matches
 
 
+def _cve_cell(m: dict[str, Any]) -> str:
+    cves = m.get("cves") or []
+    if not cves:
+        return "—"
+    return ", ".join(osv_cves.format_cve_inline(c) for c in cves)
+
+
 def render_report(matches: list[dict[str, Any]]) -> str:
     lines = [
         "# Lightwell remediations available",
         "",
         "This scan found Maven dependencies that have a matching Lightwell remediated version.",
+        "",
+        "CVE IDs and CVSS scores come from Lightwell OSV advisories for the target `.rhlw` / `.redhat` build.",
+        "Empty CVE cells mean no advisory claims that build as a fix (common for some validated drop-ins).",
         "",
         "The **Lightwell Remediate** workflow opens or updates a PR on the target app automatically when matches are found.",
         "",
@@ -196,7 +208,26 @@ def render_report(matches: list[dict[str, Any]]) -> str:
         )
         return "\n".join(lines)
 
-    lines.extend(["## Proposed bumps", ""])
+    lines.extend(
+        [
+            "## Proposed bumps",
+            "",
+            "| Library | Bump | Tier | CVEs fixed (CVSS) | Highest |",
+            "|---------|------|------|-------------------|---------|",
+        ]
+    )
+    for m in matches:
+        lib = f"`{m['groupId']}:{m['artifactId']}`"
+        bump = f"`{m['fromVersion']}` → `{m['toVersion']}`"
+        tier = m.get("tier") or "—"
+        highest = "—"
+        if m.get("max_cvss") is not None:
+            highest = f"**{m['max_cvss']}** {m.get('max_severity') or ''}".strip()
+        lines.append(
+            f"| {lib} | {bump} | {tier} | {_cve_cell(m)} | {highest} |"
+        )
+
+    lines.extend(["", "### Details", ""])
     for m in matches:
         tier = f" ({m['tier']})" if m.get("tier") else ""
         lines.append(
@@ -206,6 +237,19 @@ def render_report(matches: list[dict[str, Any]]) -> str:
         )
         if m.get("summary"):
             lines.append(f"  - {m['summary']}")
+        cves = m.get("cves") or []
+        if cves:
+            lines.append("  - **CVEs fixed:**")
+            for c in cves:
+                sev = ""
+                if c.get("cvss") is not None:
+                    sev = f" — CVSS {c['cvss']} ({c.get('severity') or '?'})"
+                lines.append(f"    - [`{c['id']}`](https://nvd.nist.gov/vuln/detail/{c['id']}){sev}")
+                if c.get("summary"):
+                    lines.append(f"      - {c['summary']}")
+        else:
+            lines.append("  - CVEs fixed: *(none listed in Lightwell OSV for this build)*")
+
     lines.extend(["", "## Proposed pom diff", "", "```diff"])
     for m in matches:
         lines.append(f"# {m['groupId']}:{m['artifactId']} ({m['pom']})")
@@ -257,6 +301,27 @@ def main() -> int:
         default=[],
         help="Directory name to exclude (repeatable). Defaults include recipe modules.",
     )
+    parser.add_argument(
+        "--osv-dir",
+        type=Path,
+        default=None,
+        help="Local directory of Lightwell OSV JSON advisories (offline / tests)",
+    )
+    parser.add_argument(
+        "--osv-url",
+        default=osv_cves.DEFAULT_OSV_URL,
+        help="Lightwell OSV remediated index URL (default: public demo feed)",
+    )
+    parser.add_argument(
+        "--no-osv",
+        action="store_true",
+        help="Skip CVE/CVSS enrichment (catalog match only)",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Do not fetch OSV over the network (use --osv-dir only)",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -282,6 +347,26 @@ def main() -> int:
         print(f"Invalid catalog {catalog_path}: {exc}", file=sys.stderr)
         return 1
     matches = match_remediations(root, catalog, exclude_dirs)
+
+    if not args.no_osv:
+        osv_dir = args.osv_dir.resolve() if args.osv_dir else None
+        fetch = not args.offline
+        records = osv_cves.load_osv_index(
+            osv_dir=osv_dir,
+            osv_url=args.osv_url if fetch else None,
+            fetch=fetch,
+        )
+        if records:
+            print(f"Loaded {len(records)} Lightwell OSV advisory(ies) for CVE join")
+        else:
+            print("No OSV advisories loaded — matches will have empty CVE lists")
+        osv_cves.attach_cves_to_matches(matches, records)
+    else:
+        for m in matches:
+            m.setdefault("cves", [])
+            m.setdefault("max_cvss", None)
+            m.setdefault("max_severity", None)
+
     report = render_report(matches)
 
     out_dir.mkdir(parents=True, exist_ok=True)
