@@ -273,6 +273,66 @@ def load_osv_index(
     return records
 
 
+DEFAULT_MAVEN_REPOS: tuple[str, ...] = (
+    "https://packages.redhat.com/lightwell/public-lightwell-demo/java/remediated/",
+    "https://packages.redhat.com/lightwell/public-lightwell-demo/java/validated/",
+)
+
+_ARTIFACT_EXISTS_CACHE: dict[str, bool] = {}
+
+
+def maven_artifact_url(
+    repo_url: str, group_id: str, artifact_id: str, version: str
+) -> str:
+    """POM URL for a Maven GAV under a repository root."""
+    base = repo_url if repo_url.endswith("/") else repo_url + "/"
+    group_path = group_id.replace(".", "/")
+    return (
+        f"{base}{group_path}/{artifact_id}/{version}/"
+        f"{artifact_id}-{version}.pom"
+    )
+
+
+def maven_artifact_exists(
+    group_id: str,
+    artifact_id: str,
+    version: str,
+    repo_urls: list[str] | tuple[str, ...] | None = None,
+    *,
+    timeout: float = 15.0,
+) -> bool:
+    """True when the POM resolves from at least one Lightwell Maven repo."""
+    if not group_id or not artifact_id or not version:
+        return False
+    urls = list(repo_urls or DEFAULT_MAVEN_REPOS)
+    cache_key = f"{group_id}:{artifact_id}:{version}|{'|'.join(urls)}"
+    cached = _ARTIFACT_EXISTS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    found = False
+    for repo in urls:
+        pom_url = maven_artifact_url(repo, group_id, artifact_id, version)
+        req = urllib.request.Request(
+            pom_url,
+            method="HEAD",
+            headers={"User-Agent": "lightwell-github-plugin/osv-cves"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if 200 <= getattr(resp, "status", 200) < 400:
+                    found = True
+                    break
+        except urllib.error.HTTPError as exc:
+            if exc.code in {301, 302, 303, 307, 308}:
+                found = True
+                break
+            continue
+        except (urllib.error.URLError, TimeoutError, OSError):
+            continue
+    _ARTIFACT_EXISTS_CACHE[cache_key] = found
+    return found
+
+
 def highest_osv_fixed(
     osv_records: list[dict[str, Any]],
     *,
@@ -306,30 +366,53 @@ def elevate_to_highest_osv_fixed(
     osv_records: list[dict[str, Any]],
     *,
     version_key_name: str = "toVersion",
+    repo_urls: list[str] | tuple[str, ...] | None = None,
+    require_published: bool = True,
+    exists_fn=None,
 ) -> int:
-    """Bump each row's target build to the highest OSV ``fixed`` when newer.
+    """Bump each row's target to the highest *published* OSV ``fixed`` build.
 
-    Returns the number of rows whose target version changed. Used so the plugin
-    always proposes e.g. ``5.3.18.rhlw-00010`` even if the Maven index still
-    lists an older suffix such as ``…-00003``.
+    Hybrid policy:
+    - If OSV cites a newer ``fixed`` **and** that GAV exists on a Lightwell Maven
+      repo, elevate ``toVersion`` to it.
+    - If OSV cites a newer ``fixed`` that is **not** published yet, keep the
+      Maven/catalog version and set ``laterOsvFixed`` so reports can note it.
+
+    Returns the number of rows whose ``toVersion`` changed.
     """
     changed = 0
     if not osv_records:
         return 0
+    check = exists_fn or maven_artifact_exists
+    repos = list(repo_urls) if repo_urls is not None else list(DEFAULT_MAVEN_REPOS)
     for row in rows:
         current = str(row.get(version_key_name) or "")
+        group_id = str(row.get("groupId") or "")
+        artifact_id = str(row.get("artifactId") or "")
         highest = highest_osv_fixed(
             osv_records,
-            group_id=str(row.get("groupId") or ""),
-            artifact_id=str(row.get("artifactId") or ""),
+            group_id=group_id,
+            artifact_id=artifact_id,
             from_version=str(row.get("fromVersion") or "") or None,
         )
         if not highest:
+            row.pop("laterOsvFixed", None)
             continue
-        if not current or version_key(highest) > version_key(current):
-            if current != highest:
-                row[version_key_name] = highest
-                changed += 1
+        if current and version_key(highest) <= version_key(current):
+            row.pop("laterOsvFixed", None)
+            continue
+        published = True
+        if require_published:
+            published = bool(repos) and check(
+                group_id, artifact_id, highest, repos
+            )
+        if not published:
+            row["laterOsvFixed"] = highest
+            continue
+        if current != highest:
+            row[version_key_name] = highest
+            changed += 1
+        row.pop("laterOsvFixed", None)
     return changed
 
 
@@ -382,9 +465,19 @@ def cves_fixed_by_build(
 def attach_cves_to_matches(
     matches: list[dict[str, Any]],
     osv_records: list[dict[str, Any]],
+    *,
+    repo_urls: list[str] | tuple[str, ...] | None = None,
+    require_published: bool = True,
+    exists_fn=None,
 ) -> list[dict[str, Any]]:
-    """Mutate matches in place: elevate target build, add CVEs, sort by severity."""
-    elevate_to_highest_osv_fixed(matches, osv_records)
+    """Mutate matches in place: elevate published OSV targets, add CVEs, sort."""
+    elevate_to_highest_osv_fixed(
+        matches,
+        osv_records,
+        repo_urls=repo_urls,
+        require_published=require_published,
+        exists_fn=exists_fn,
+    )
     for m in matches:
         details = cves_fixed_by_build(
             osv_records,
@@ -393,6 +486,18 @@ def attach_cves_to_matches(
             version=m["toVersion"],
         )
         m["cves"] = details
+        later = m.get("laterOsvFixed")
+        if later and version_key(str(later)) > version_key(str(m.get("toVersion") or "")):
+            later_cves = cves_fixed_by_build(
+                osv_records,
+                group_id=m["groupId"],
+                artifact_id=m["artifactId"],
+                version=str(later),
+            )
+            have = {c["id"] for c in details}
+            m["pendingCves"] = [c for c in later_cves if c["id"] not in have]
+        else:
+            m.pop("pendingCves", None)
         scores = [d["cvss"] for d in details if d.get("cvss") is not None]
         if scores:
             m["max_cvss"] = max(scores)

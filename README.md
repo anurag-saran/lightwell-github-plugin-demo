@@ -89,12 +89,13 @@ Skip CVE enrichment entirely: add `--no-osv`.
 The remediation PR / `report.md` lists each bump with **CVEs fixed** and **CVSS**
 severity (from Lightwell OSV). Matches are sorted highest severity first.
 
-Target builds always use the **highest** `.rhlw-NNNN` (or `.redhat-NNNN`) suffix
-known for that upstream version: `sync_catalog.py` picks the max from the Maven
-index **and** elevates further when OSV `fixed` events cite a newer suffix
-(e.g. Maven still lists `5.3.18.rhlw-00003` but OSV fixes at `5.3.18.rhlw-00010`).
-Scan-time enrichment applies the same elevation so remediations stay current even
-if `catalog.json` lags.
+Target builds use the **highest published** `.rhlw-NNNN` (or `.redhat-NNNN`) for
+that upstream version: `sync_catalog.py` takes the max from the Maven index, then
+elevates to a newer OSV `fixed` **only if that artifact resolves** from the public
+Lightwell Maven demo. If OSV cites a later build that is not published yet
+(e.g. Maven has `5.3.18.rhlw-00003` but OSV says `5.3.18.rhlw-00010`), the catalog
+and PR keep the published build and note the later OSV fix (with its CVEs).
+Scan-time enrichment uses the same hybrid rule.
 
 When you run an older upstream than Lightwell services (e.g. snakeyaml `1.30` while
 the catalog has `1.33.0.rhlw-00001`), the **Proposed bumps** table lists it as

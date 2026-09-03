@@ -64,6 +64,15 @@ def load_catalog(path: Path) -> list[dict[str, str]]:
     return remediations
 
 
+def load_catalog_repo_urls(path: Path) -> list[str]:
+    """Maven repository roots from catalog.json (for publish checks)."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    repos = data.get("repositories") or {}
+    if isinstance(repos, dict):
+        return [str(u) for u in repos.values() if u]
+    return []
+
+
 # Tooling / recipe modules in this demo repo are not customer app targets.
 DEFAULT_EXCLUDE_DIR_NAMES = {
     ".git",
@@ -289,20 +298,46 @@ def match_remediations(
 
 def _cve_cell(m: dict[str, Any]) -> str:
     cves = m.get("cves") or []
-    if not cves:
-        return "—"
-    return ", ".join(osv_cves.format_cve_inline(c) for c in cves)
+    pending = m.get("pendingCves") or []
+    parts: list[str] = []
+    if cves:
+        parts.append(", ".join(osv_cves.format_cve_inline(c) for c in cves))
+    if pending:
+        later = m.get("laterOsvFixed") or ""
+        pending_ids = ", ".join(c["id"] for c in pending)
+        suffix = f" at `{later}`" if later else ""
+        parts.append(f"_later: {pending_ids}{suffix}_")
+    return "; ".join(parts) if parts else "—"
 
 
 def _serviced_cell(m: dict[str, Any]) -> str:
     versions = m.get("servicedVersions") or [m.get("toVersion")]
-    return ", ".join(f"`{v}`" for v in versions if v)
+    cell = ", ".join(f"`{v}`" for v in versions if v)
+    later = m.get("laterOsvFixed")
+    if later and later not in (versions or []):
+        cell = f"{cell} _(OSV later: `{later}`)_" if cell else f"_OSV later: `{later}`_"
+    return cell
 
 
 def _highest_cell(m: dict[str, Any]) -> str:
     if m.get("max_cvss") is not None:
         return f"**{m['max_cvss']}** {m.get('max_severity') or ''}".strip()
     return "—"
+
+
+def _meaning_cell(m: dict[str, Any]) -> str:
+    meaning = m.get("meaning") or MEANING_DROP_IN
+    if m.get("matchKind") == MATCH_SERVICED_OTHER:
+        meaning = f"**Serviced — at a different version.** {MEANING_SERVICED_OTHER}"
+    elif m.get("tier"):
+        meaning = f"{meaning} ({m['tier']})"
+    later = m.get("laterOsvFixed")
+    if later:
+        meaning = (
+            f"{meaning} Later OSV fix `{later}` is not on the public Maven demo yet "
+            f"— proposing the published build."
+        )
+    return meaning
 
 
 def render_report(matches: list[dict[str, Any]]) -> str:
@@ -313,6 +348,8 @@ def render_report(matches: list[dict[str, Any]]) -> str:
         "",
         "CVE IDs and CVSS scores come from Lightwell OSV advisories for the target `.rhlw` / `.redhat` build.",
         "Empty CVE cells mean no advisory claims that build as a fix (common for some validated drop-ins).",
+        "When OSV cites a newer `.rhlw` that is not on the public Maven demo yet, the table keeps the "
+        "published build and notes the later OSV fix (and its CVEs) instead of proposing an unresolvable version.",
         "",
         "**Drop-in** rows are proposed as pom edits. **Serviced — at a different version** rows "
         "are informational only in this table (a real upgrade, or a request for your exact version).",
@@ -342,13 +379,8 @@ def render_report(matches: list[dict[str, Any]]) -> str:
     for m in matches:
         lib = f"`{m['groupId']}:{m['artifactId']}`"
         you_run = f"`{m['fromVersion']}`"
-        meaning = m.get("meaning") or MEANING_DROP_IN
-        if m.get("matchKind") == MATCH_SERVICED_OTHER:
-            meaning = f"**Serviced — at a different version.** {MEANING_SERVICED_OTHER}"
-        elif m.get("tier"):
-            meaning = f"{meaning} ({m['tier']})"
         lines.append(
-            f"| {lib} | {you_run} | {_serviced_cell(m)} | {meaning} | "
+            f"| {lib} | {you_run} | {_serviced_cell(m)} | {_meaning_cell(m)} | "
             f"{_cve_cell(m)} | {_highest_cell(m)} |"
         )
 
@@ -370,6 +402,11 @@ def render_report(matches: list[dict[str, Any]]) -> str:
         )
         if m.get("summary"):
             lines.append(f"  - {m['summary']}")
+        later = m.get("laterOsvFixed")
+        if later:
+            lines.append(
+                f"  - Later OSV fix `{later}` is not published on the public Maven demo yet"
+            )
         cves = m.get("cves") or []
         if cves:
             lines.append("  - **CVEs fixed:**")
@@ -386,6 +423,18 @@ def render_report(matches: list[dict[str, Any]]) -> str:
             lines.append(
                 "  - CVEs fixed: *(none listed in Lightwell OSV for this build)*"
             )
+        pending = m.get("pendingCves") or []
+        if pending:
+            lines.append(
+                f"  - **CVEs at later unpublished OSV build** (`{later}`):"
+            )
+            for c in pending:
+                sev = ""
+                if c.get("cvss") is not None:
+                    sev = f" — CVSS {c['cvss']} ({c.get('severity') or '?'})"
+                lines.append(
+                    f"    - [`{c['id']}`](https://nvd.nist.gov/vuln/detail/{c['id']}){sev}"
+                )
 
     lines.extend(["", "## Proposed pom diff", "", "```diff"])
     if not apply_matches:
@@ -486,6 +535,9 @@ def main() -> int:
     except (json.JSONDecodeError, ValueError) as exc:
         print(f"Invalid catalog {catalog_path}: {exc}", file=sys.stderr)
         return 1
+    repo_urls = load_catalog_repo_urls(catalog_path) or list(
+        osv_cves.DEFAULT_MAVEN_REPOS
+    )
     matches = match_remediations(root, catalog, exclude_dirs)
 
     if not args.no_osv:
@@ -501,13 +553,23 @@ def main() -> int:
         else:
             print("No OSV advisories loaded — matches will have empty CVE lists")
         before = {id(m): m.get("toVersion") for m in matches}
-        osv_cves.attach_cves_to_matches(matches, records)
+        osv_cves.attach_cves_to_matches(
+            matches,
+            records,
+            repo_urls=repo_urls,
+            require_published=True,
+        )
         elevated = sum(
             1 for m in matches if m.get("toVersion") != before.get(id(m))
         )
+        deferred = sum(1 for m in matches if m.get("laterOsvFixed"))
         if elevated:
             print(
-                f"Elevated {elevated} match(es) to highest OSV .rhlw fixed build"
+                f"Elevated {elevated} match(es) to highest published OSV .rhlw fixed build"
+            )
+        if deferred:
+            print(
+                f"Noted {deferred} match(es) with later OSV fixed builds not yet on Maven"
             )
     else:
         for m in matches:

@@ -201,8 +201,9 @@ def elevate_remediations_from_osv(
     osv_url: str | None = DEFAULT_OSV_URL,
     osv_dir: Path | None = None,
     fetch: bool = True,
+    repo_urls: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Prefer the highest OSV ``fixed`` build over a stale Maven index suffix."""
+    """Prefer the highest *published* OSV ``fixed`` build over a stale Maven suffix."""
     records = osv_cves.load_osv_index(
         osv_dir=osv_dir,
         osv_url=osv_url if fetch else None,
@@ -211,12 +212,35 @@ def elevate_remediations_from_osv(
     if not records:
         print("No OSV advisories loaded — keeping Maven index versions", file=sys.stderr)
         return remediations
-    bumped = osv_cves.elevate_to_highest_osv_fixed(remediations, records)
+    repos = repo_urls or list(DEFAULT_REPOS.values())
+    bumped = osv_cves.elevate_to_highest_osv_fixed(
+        remediations,
+        records,
+        repo_urls=repos,
+        require_published=True,
+    )
+    deferred = sum(1 for r in remediations if r.get("laterOsvFixed"))
     if bumped:
         print(
-            f"Elevated {bumped} remediation(s) to highest OSV fixed build",
+            f"Elevated {bumped} remediation(s) to highest published OSV fixed build",
             file=sys.stderr,
         )
+    if deferred:
+        print(
+            f"Kept Maven version for {deferred} remediation(s); "
+            f"OSV cites a later unpublished fixed build",
+            file=sys.stderr,
+        )
+        for r in remediations:
+            later = r.get("laterOsvFixed")
+            if later:
+                print(
+                    f"  {r['groupId']}:{r['artifactId']} "
+                    f"{r['toVersion']} (OSV later: {later})",
+                    file=sys.stderr,
+                )
+                # Catalog JSON should only carry published targets.
+                r.pop("laterOsvFixed", None)
     return remediations
 
 
@@ -239,6 +263,7 @@ def build_catalog(
         osv_url=osv_url,
         osv_dir=osv_dir,
         fetch=fetch_osv,
+        repo_urls=list(repos.values()),
     )
     return {
         "remediations": remediations,

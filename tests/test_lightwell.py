@@ -401,17 +401,8 @@ class OsvCveTests(unittest.TestCase):
         self.assertEqual(matches[2]["cves"][0]["id"], "CVE-2099-0001")
         self.assertLess(matches[2]["max_cvss"], 4.0)
 
-    def test_elevate_to_highest_osv_fixed_build(self) -> None:
-        """Maven index may lag; OSV fixed (e.g. rhlw-00010) wins."""
-        matches = [
-            {
-                "pom": "pom.xml",
-                "groupId": "org.springframework",
-                "artifactId": "spring-core",
-                "fromVersion": "5.3.18",
-                "toVersion": "5.3.18.rhlw-00003",
-            }
-        ]
+    def test_elevate_only_when_osv_fixed_is_published(self) -> None:
+        """Hybrid: elevate to OSV fixed only if the Maven artifact exists."""
         records = [
             {
                 "id": "x_RHLW-CVE-2025-41249-5.3.18",
@@ -441,10 +432,46 @@ class OsvCveTests(unittest.TestCase):
                 ],
             }
         ]
-        osv_cves.attach_cves_to_matches(matches, records)
-        self.assertEqual(matches[0]["toVersion"], "5.3.18.rhlw-00010")
-        self.assertEqual(matches[0]["cves"][0]["id"], "CVE-2025-41249")
-        self.assertEqual(matches[0]["cves"][0]["fixed_in"], "5.3.18.rhlw-00010")
+
+        unpublished = [
+            {
+                "pom": "pom.xml",
+                "groupId": "org.springframework",
+                "artifactId": "spring-core",
+                "fromVersion": "5.3.18",
+                "toVersion": "5.3.18.rhlw-00003",
+            }
+        ]
+        osv_cves.attach_cves_to_matches(
+            unpublished,
+            records,
+            require_published=True,
+            exists_fn=lambda *_a, **_k: False,
+        )
+        self.assertEqual(unpublished[0]["toVersion"], "5.3.18.rhlw-00003")
+        self.assertEqual(unpublished[0]["laterOsvFixed"], "5.3.18.rhlw-00010")
+        self.assertEqual(unpublished[0]["cves"], [])
+        self.assertEqual(unpublished[0]["pendingCves"][0]["id"], "CVE-2025-41249")
+
+        published = [
+            {
+                "pom": "pom.xml",
+                "groupId": "org.springframework",
+                "artifactId": "spring-core",
+                "fromVersion": "5.3.18",
+                "toVersion": "5.3.18.rhlw-00003",
+            }
+        ]
+        osv_cves.attach_cves_to_matches(
+            published,
+            records,
+            require_published=True,
+            exists_fn=lambda *_a, **_k: True,
+        )
+        self.assertEqual(published[0]["toVersion"], "5.3.18.rhlw-00010")
+        self.assertNotIn("laterOsvFixed", published[0])
+        self.assertEqual(published[0]["cves"][0]["id"], "CVE-2025-41249")
+        self.assertEqual(published[0]["cves"][0]["fixed_in"], "5.3.18.rhlw-00010")
 
     def test_no_invented_cves_without_osv(self) -> None:
         matches = [
