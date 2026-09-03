@@ -36,27 +36,37 @@ permissions:
   contents: read
 
 jobs:
+  select-targets:
+    name: Select target repos
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.set.outputs.targets }}
+    steps:
+      - id: set
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SELECTED: ${{ inputs.target_repo }}
+        run: |
+          set -euo pipefail
+          ALL='["anurag-saran/payments-service","anurag-saran/payments-service-notests","anurag-saran/payments-service-grade-c","anurag-saran/payments-service-grade-f"]'
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "${SELECTED:-}" ]; then
+            # JSON-encode the single selected repo
+            echo "targets=$(python3 -c 'import json,os; print(json.dumps([os.environ["SELECTED"]]))')" >> "$GITHUB_OUTPUT"
+          else
+            echo "targets=$ALL" >> "$GITHUB_OUTPUT"
+          fi
+
   remediate:
     name: Remediate ${{ matrix.target_repo }}
+    needs: select-targets
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target_repo:
-          - anurag-saran/payments-service
-          - anurag-saran/payments-service-notests
-          - anurag-saran/payments-service-grade-c
-          - anurag-saran/payments-service-grade-f
+        target_repo: ${{ fromJSON(needs.select-targets.outputs.targets) }}
     concurrency:
       group: lightwell-remediate-${{ matrix.target_repo }}
       cancel-in-progress: true
-    # Manual runs only execute the selected target; schedule/push hit all four.
-    # Use the `inputs` context (empty on push/schedule). Avoid github.event.inputs
-    # (null on push → 0-job failure) and avoid wrapping this if in ${{ }} (breaks
-    # workflow_dispatch validation: "Unrecognized named-value: matrix").
-    if: >-
-      github.event_name != 'workflow_dispatch'
-      || matrix.target_repo == inputs.target_repo
     env:
       TARGET_REPO: ${{ matrix.target_repo }}
       DRY_RUN: ${{ inputs.dry_run || false }}
