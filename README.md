@@ -96,6 +96,11 @@ index **and** elevates further when OSV `fixed` events cite a newer suffix
 Scan-time enrichment applies the same elevation so remediations stay current even
 if `catalog.json` lags.
 
+When you run an older upstream than Lightwell services (e.g. snakeyaml `1.30` while
+the catalog has `1.33.0.rhlw-00001`), the **Proposed bumps** table lists it as
+**Serviced — at a different version** with CVEs for the serviced build. Those rows
+are informational only (not auto-applied to the pom).
+
 ## Tests
 
 ```bash

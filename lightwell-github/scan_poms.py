@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,16 @@ REQUIRED_REMEDIATION_KEYS = {
     "fromVersion",
     "toVersion",
 }
+
+MATCH_DROP_IN = "drop_in"
+MATCH_SERVICED_OTHER = "serviced_other_version"
+
+MEANING_DROP_IN = "Swap the version suffix. No code change."
+MEANING_SERVICED_OTHER = (
+    "Move to a serviced version, or request your version."
+)
+
+_RH_SUFFIX_RE = re.compile(r"[.-](redhat|rhlw)-\d+$", re.I)
 
 
 def _local_tag(tag: str) -> str:
@@ -146,35 +158,132 @@ def _under_plugin(elem: ET.Element, parent_map: dict[ET.Element, ET.Element]) ->
     return False
 
 
+def base_version(version: str) -> str:
+    """Strip Lightwell / Red Hat rebuild suffix (``…rhlw-NNNN`` / ``…redhat-NNNN``)."""
+    return _RH_SUFFIX_RE.sub("", version or "")
+
+
+def _should_apply(match: dict[str, Any]) -> bool:
+    """Drop-in rebuilds are auto-applied; other-version upgrades are table-only."""
+    if match.get("apply") is False:
+        return False
+    return match.get("matchKind", MATCH_DROP_IN) == MATCH_DROP_IN
+
+
+def _best_remediation(candidates: list[dict[str, str]]) -> dict[str, str]:
+    return max(candidates, key=lambda r: osv_cves.version_key(r["toVersion"]))
+
+
+def _build_match(
+    *,
+    pom: str,
+    dep: dict[str, str],
+    rem: dict[str, str],
+    match_kind: str,
+    serviced_versions: list[str] | None = None,
+    meaning: str,
+) -> dict[str, Any]:
+    match: dict[str, Any] = {
+        "pom": pom,
+        "groupId": dep["groupId"],
+        "artifactId": dep["artifactId"],
+        "fromVersion": dep["version"],
+        "toVersion": rem["toVersion"],
+        "summary": rem.get("summary", ""),
+        "matchKind": match_kind,
+        "meaning": meaning,
+        "apply": match_kind == MATCH_DROP_IN,
+    }
+    if rem.get("tier"):
+        match["tier"] = rem["tier"]
+    if dep.get("versionProperty"):
+        match["versionProperty"] = dep["versionProperty"]
+    if serviced_versions:
+        match["servicedVersions"] = serviced_versions
+    else:
+        match["servicedVersions"] = [rem["toVersion"]]
+    return match
+
+
 def match_remediations(
     root: Path,
     catalog: list[dict[str, str]],
     exclude_dirs: set[str],
 ) -> list[dict[str, Any]]:
-    index = {
+    """Match POM deps to catalog drop-ins and newer serviced versions.
+
+    * **drop_in** — Red Hat rebuilt the exact upstream version you run (auto-applied).
+    * **serviced_other_version** — catalog only has a newer/other base (table-only;
+      not written into the pom by ``apply_bumps``).
+    """
+    exact_index = {
         (r["groupId"], r["artifactId"], r["fromVersion"]): r for r in catalog
     }
+    by_ga: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    for rem in catalog:
+        by_ga[(rem["groupId"], rem["artifactId"])].append(rem)
+
     matches: list[dict[str, Any]] = []
     for pom in find_poms(root, exclude_dirs):
         rel = pom.relative_to(root).as_posix()
         for dep in parse_dependencies(pom.read_text(encoding="utf-8"), pom_label=rel):
-            key = (dep["groupId"], dep["artifactId"], dep["version"])
-            rem = index.get(key)
-            if not rem:
+            g, a, v = dep["groupId"], dep["artifactId"], dep["version"]
+            rem = exact_index.get((g, a, v))
+            if rem:
+                matches.append(
+                    _build_match(
+                        pom=rel,
+                        dep=dep,
+                        rem=rem,
+                        match_kind=MATCH_DROP_IN,
+                        meaning=MEANING_DROP_IN,
+                    )
+                )
                 continue
-            match: dict[str, Any] = {
-                "pom": rel,
-                "groupId": dep["groupId"],
-                "artifactId": dep["artifactId"],
-                "fromVersion": dep["version"],
-                "toVersion": rem["toVersion"],
-                "summary": rem.get("summary", ""),
-            }
-            if rem.get("tier"):
-                match["tier"] = rem["tier"]
-            if dep.get("versionProperty"):
-                match["versionProperty"] = dep["versionProperty"]
-            matches.append(match)
+
+            run_base = base_version(v)
+            run_key = osv_cves.version_key(run_base)
+            same_base = [
+                r
+                for r in by_ga.get((g, a), [])
+                if r["fromVersion"] == run_base
+            ]
+            if same_base and osv_cves.is_remediated_version(v):
+                best = _best_remediation(same_base)
+                if osv_cves.version_key(best["toVersion"]) > osv_cves.version_key(v):
+                    matches.append(
+                        _build_match(
+                            pom=rel,
+                            dep=dep,
+                            rem=best,
+                            match_kind=MATCH_DROP_IN,
+                            meaning=MEANING_DROP_IN,
+                        )
+                    )
+                continue
+
+            forward = [
+                r
+                for r in by_ga.get((g, a), [])
+                if osv_cves.version_key(r["fromVersion"]) > run_key
+            ]
+            if not forward:
+                continue
+            best = _best_remediation(forward)
+            serviced = sorted(
+                {r["toVersion"] for r in forward},
+                key=osv_cves.version_key,
+            )
+            matches.append(
+                _build_match(
+                    pom=rel,
+                    dep=dep,
+                    rem=best,
+                    match_kind=MATCH_SERVICED_OTHER,
+                    serviced_versions=serviced,
+                    meaning=MEANING_SERVICED_OTHER,
+                )
+            )
     return matches
 
 
@@ -185,6 +294,17 @@ def _cve_cell(m: dict[str, Any]) -> str:
     return ", ".join(osv_cves.format_cve_inline(c) for c in cves)
 
 
+def _serviced_cell(m: dict[str, Any]) -> str:
+    versions = m.get("servicedVersions") or [m.get("toVersion")]
+    return ", ".join(f"`{v}`" for v in versions if v)
+
+
+def _highest_cell(m: dict[str, Any]) -> str:
+    if m.get("max_cvss") is not None:
+        return f"**{m['max_cvss']}** {m.get('max_severity') or ''}".strip()
+    return "—"
+
+
 def render_report(matches: list[dict[str, Any]]) -> str:
     lines = [
         "# Lightwell remediations available",
@@ -193,6 +313,9 @@ def render_report(matches: list[dict[str, Any]]) -> str:
         "",
         "CVE IDs and CVSS scores come from Lightwell OSV advisories for the target `.rhlw` / `.redhat` build.",
         "Empty CVE cells mean no advisory claims that build as a fix (common for some validated drop-ins).",
+        "",
+        "**Drop-in** rows are proposed as pom edits. **Serviced — at a different version** rows "
+        "are informational only in this table (a real upgrade, or a request for your exact version).",
         "",
         "The **Lightwell Remediate** workflow opens or updates a PR on the target app automatically when matches are found.",
         "",
@@ -212,23 +335,33 @@ def render_report(matches: list[dict[str, Any]]) -> str:
         [
             "## Proposed bumps",
             "",
-            "| Library | Bump | Tier | CVEs fixed (CVSS) | Highest |",
-            "|---------|------|------|-------------------|---------|",
+            "| Dependency | You run | Serviced versions | What it means for you | CVEs fixed (CVSS) | Highest |",
+            "|------------|---------|-------------------|-----------------------|-------------------|---------|",
         ]
     )
     for m in matches:
         lib = f"`{m['groupId']}:{m['artifactId']}`"
-        bump = f"`{m['fromVersion']}` → `{m['toVersion']}`"
-        tier = m.get("tier") or "—"
-        highest = "—"
-        if m.get("max_cvss") is not None:
-            highest = f"**{m['max_cvss']}** {m.get('max_severity') or ''}".strip()
+        you_run = f"`{m['fromVersion']}`"
+        meaning = m.get("meaning") or MEANING_DROP_IN
+        if m.get("matchKind") == MATCH_SERVICED_OTHER:
+            meaning = f"**Serviced — at a different version.** {MEANING_SERVICED_OTHER}"
+        elif m.get("tier"):
+            meaning = f"{meaning} ({m['tier']})"
         lines.append(
-            f"| {lib} | {bump} | {tier} | {_cve_cell(m)} | {highest} |"
+            f"| {lib} | {you_run} | {_serviced_cell(m)} | {meaning} | "
+            f"{_cve_cell(m)} | {_highest_cell(m)} |"
         )
 
+    apply_matches = [m for m in matches if _should_apply(m)]
+
     lines.extend(["", "### Details", ""])
-    for m in matches:
+    if not apply_matches:
+        lines.append(
+            "No drop-in pom edits. See **Serviced — at a different version** rows "
+            "in the Proposed bumps table above."
+        )
+        lines.append("")
+    for m in apply_matches:
         tier = f" ({m['tier']})" if m.get("tier") else ""
         lines.append(
             f"- `{m['groupId']}:{m['artifactId']}` "
@@ -244,14 +377,21 @@ def render_report(matches: list[dict[str, Any]]) -> str:
                 sev = ""
                 if c.get("cvss") is not None:
                     sev = f" — CVSS {c['cvss']} ({c.get('severity') or '?'})"
-                lines.append(f"    - [`{c['id']}`](https://nvd.nist.gov/vuln/detail/{c['id']}){sev}")
+                lines.append(
+                    f"    - [`{c['id']}`](https://nvd.nist.gov/vuln/detail/{c['id']}){sev}"
+                )
                 if c.get("summary"):
                     lines.append(f"      - {c['summary']}")
         else:
-            lines.append("  - CVEs fixed: *(none listed in Lightwell OSV for this build)*")
+            lines.append(
+                "  - CVEs fixed: *(none listed in Lightwell OSV for this build)*"
+            )
 
     lines.extend(["", "## Proposed pom diff", "", "```diff"])
-    for m in matches:
+    if not apply_matches:
+        lines.append("# (no drop-in pom edits; see serviced-other rows in the table above)")
+        lines.append("")
+    for m in apply_matches:
         lines.append(f"# {m['groupId']}:{m['artifactId']} ({m['pom']})")
         lines.append(" <dependency>")
         lines.append(f"   <groupId>{m['groupId']}</groupId>")

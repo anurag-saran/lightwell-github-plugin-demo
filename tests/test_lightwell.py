@@ -149,6 +149,59 @@ class MatchAndApplyTests(unittest.TestCase):
             }
             self.assertFalse(apply_bumps.apply_match(root, bad))
 
+    def test_serviced_other_version_match_not_applied(self) -> None:
+        catalog = [
+            {
+                "groupId": "org.yaml",
+                "artifactId": "snakeyaml",
+                "fromVersion": "1.33.0",
+                "toVersion": "1.33.0.rhlw-00001",
+                "tier": "validated",
+                "summary": "snakeyaml serviced",
+            }
+        ]
+        pom_text = """
+        <project>
+          <dependencies>
+            <dependency>
+              <groupId>org.yaml</groupId>
+              <artifactId>snakeyaml</artifactId>
+              <version>1.30</version>
+            </dependency>
+          </dependencies>
+        </project>
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pom.xml").write_text(pom_text, encoding="utf-8")
+            matches = scan_poms.match_remediations(root, catalog, set())
+            self.assertEqual(len(matches), 1)
+            m = matches[0]
+            self.assertEqual(m["matchKind"], "serviced_other_version")
+            self.assertFalse(m["apply"])
+            self.assertEqual(m["fromVersion"], "1.30")
+            self.assertEqual(m["toVersion"], "1.33.0.rhlw-00001")
+            self.assertEqual(m["servicedVersions"], ["1.33.0.rhlw-00001"])
+
+            matches_path = root / "matches.json"
+            matches_path.write_text(
+                json.dumps({"matches": matches}), encoding="utf-8"
+            )
+            argv = [
+                "apply_bumps.py",
+                "--root",
+                str(root),
+                "--matches",
+                str(matches_path),
+            ]
+            old = sys.argv
+            try:
+                sys.argv = argv
+                self.assertEqual(apply_bumps.main(), 0)
+            finally:
+                sys.argv = old
+            self.assertIn("<version>1.30</version>", (root / "pom.xml").read_text())
+
 
 class CatalogSchemaTests(unittest.TestCase):
     def test_load_catalog_rejects_missing_keys(self) -> None:
@@ -204,6 +257,9 @@ class ReportTests(unittest.TestCase):
                     "fromVersion": "2.11.0",
                     "toVersion": "2.11.0.rhlw-1",
                     "summary": "",
+                    "matchKind": "drop_in",
+                    "meaning": scan_poms.MEANING_DROP_IN,
+                    "servicedVersions": ["2.11.0.rhlw-1"],
                     "cves": [],
                     "max_cvss": None,
                     "max_severity": None,
@@ -225,6 +281,9 @@ class ReportTests(unittest.TestCase):
                     "fromVersion": "5.3.18",
                     "toVersion": "5.3.18.rhlw-00001",
                     "tier": "remediated",
+                    "matchKind": "drop_in",
+                    "meaning": scan_poms.MEANING_DROP_IN,
+                    "servicedVersions": ["5.3.18.rhlw-00001"],
                     "summary": "test",
                     "cves": [
                         {
@@ -239,11 +298,51 @@ class ReportTests(unittest.TestCase):
                 }
             ]
         )
-        self.assertIn("| Library | Bump | Tier | CVEs fixed (CVSS) | Highest |", report)
+        self.assertIn(
+            "| Dependency | You run | Serviced versions | What it means for you | CVEs fixed (CVSS) | Highest |",
+            report,
+        )
         self.assertIn("CVE-2023-20863", report)
         self.assertIn("6.5", report)
         self.assertIn("MEDIUM", report)
         self.assertIn("nvd.nist.gov/vuln/detail/CVE-2023-20863", report)
+
+    def test_report_serviced_other_version_in_bumps_table_only(self) -> None:
+        report = scan_poms.render_report(
+            [
+                {
+                    "pom": "pom.xml",
+                    "groupId": "org.yaml",
+                    "artifactId": "snakeyaml",
+                    "fromVersion": "1.30",
+                    "toVersion": "1.33.0.rhlw-00001",
+                    "tier": "validated",
+                    "matchKind": "serviced_other_version",
+                    "meaning": scan_poms.MEANING_SERVICED_OTHER,
+                    "apply": False,
+                    "servicedVersions": ["1.33.0.rhlw-00001"],
+                    "cves": [
+                        {
+                            "id": "CVE-2022-1471",
+                            "cvss": 8.3,
+                            "severity": "HIGH",
+                            "summary": "SnakeYAML constructor",
+                        }
+                    ],
+                    "max_cvss": 8.3,
+                    "max_severity": "HIGH",
+                }
+            ]
+        )
+        self.assertIn("Serviced — at a different version", report)
+        self.assertIn("`org.yaml:snakeyaml`", report)
+        self.assertIn("`1.30`", report)
+        self.assertIn("`1.33.0.rhlw-00001`", report)
+        self.assertIn("CVE-2022-1471", report)
+        self.assertIn("Move to a serviced version, or request your version.", report)
+        # Informational only — not in the proposed pom diff
+        self.assertNotIn("+  <version>1.33.0.rhlw-00001</version>", report)
+        self.assertIn("no drop-in pom edits", report)
 
 
 class OsvCveTests(unittest.TestCase):

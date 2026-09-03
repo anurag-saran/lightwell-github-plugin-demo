@@ -133,6 +133,13 @@ def main() -> int:
     seen_props: set[tuple[str, str, str, str]] = set()
     ok = True
     for match in matches:
+        if match.get("apply") is False or match.get("matchKind") == "serviced_other_version":
+            print(
+                f"Skip informational match {match['groupId']}:{match['artifactId']} "
+                f"{match['fromVersion']} → {match['toVersion']} "
+                f"(serviced at a different version)"
+            )
+            continue
         prop = match.get("versionProperty")
         if prop:
             key = (
