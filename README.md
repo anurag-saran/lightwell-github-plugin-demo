@@ -18,9 +18,9 @@ The app repos are normal Maven apps — **no** Lightwell plugin code required th
 | [`payments-service-grade-c`](https://github.com/anurag-saran/payments-service-grade-c) | Live grade **C** |
 | [`payments-service-grade-f`](https://github.com/anurag-saran/payments-service-grade-f) | Live grade **F** |
 
-Each app's `.github/workflows/lightwell-badge-sync.yml` checks out
-[`anurag-saran/lightwell-github-plugin-demo`](https://github.com/anurag-saran/lightwell-github-plugin-demo)
-for scan/badge helpers.
+Each app should include [`.github/workflows/lightwell-badge-sync.yml`](samples/lightwell-badge-sync.yml)
+(checks out this plugin for scan/badge helpers). After a remediation PR merges — or any
+`pom.xml` change on `main` — that workflow re-scans and republishes the shields count.
 
 ## Contents
 
@@ -43,6 +43,7 @@ for scan/badge helpers.
 |------|--------|
 | Remediation PR | Branch `lightwell/remediations` on the **target** app (`--force-with-lease`) |
 | Available-updates badge | Branch `lightwell/badge` on the **target** app (never commits to `main`) |
+| After pom merge | Target app workflow **Lightwell badge sync** (on `pom.xml` change) refreshes the count |
 | Schedule | Weekly Monday 09:00 UTC — **all four** payment apps |
 | Manual | Actions → Lightwell Remediate → pick one of the four targets |
 
@@ -57,8 +58,18 @@ Point shields.io at:
 3. Optionally enable **dry_run** to scan without push/PR
 4. Run — PR opens on the **app** repo (unless dry-run)
 5. On the app: review PR → **merge** or **close**
+6. After merge, the app’s **Lightwell badge sync** workflow runs automatically and
+   updates the README badge (no second manual plugin run)
 
 Schedule and catalog pushes remediate **all four** targets in parallel.
+
+### Install badge sync on a new app
+
+```bash
+mkdir -p /path/to/app/.github/workflows
+cp samples/lightwell-badge-sync.yml /path/to/app/.github/workflows/
+# Edit repository: if you forked this plugin
+```
 
 ## Scripts
 

@@ -1,0 +1,93 @@
+# Copy into each target app as `.github/workflows/lightwell-badge-sync.yml`.
+# Merging a Lightwell remediation PR (or any pom.xml change on main) re-scans
+# and publishes lightwell-badge.json on branch lightwell/badge — no manual
+# plugin run required for the README shields count to stay current.
+name: Lightwell badge sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pom.xml"
+      - "**/pom.xml"
+      - ".github/workflows/lightwell-badge-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lightwell-badge-sync
+  cancel-in-progress: true
+
+jobs:
+  sync-badge:
+    name: Rescan pom and publish badge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app
+        uses: actions/checkout@v4
+        with:
+          path: _app
+
+      - name: Checkout Lightwell plugin (scan + badge helpers)
+        uses: actions/checkout@v4
+        with:
+          # Override if you forked the plugin.
+          repository: anurag-saran/lightwell-github-plugin-demo
+          path: _lightwell
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan and publish lightwell/badge
+        working-directory: _app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PLUGIN="../_lightwell/lightwell-github"
+          BRANCH="lightwell/badge"
+
+          python3 "$PLUGIN/scan_poms.py" \
+            --root . \
+            --catalog "$PLUGIN/catalog.json" \
+            --out-dir /tmp/lightwell-out
+
+          MATCH_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/lightwell-out/matches.json'))['matches']))")
+          echo "Available library updates after scan: $MATCH_COUNT"
+          echo "Available library updates: $MATCH_COUNT" >> "$GITHUB_STEP_SUMMARY"
+
+          python3 "$PLUGIN/write_badge.py" \
+            --matches /tmp/lightwell-out/matches.json \
+            --out /tmp/lightwell-badge.json
+
+          git config user.name "lightwell-bot"
+          git config user.email "lightwell-bot@users.noreply.github.com"
+          gh auth setup-git
+
+          git fetch origin main
+          git fetch origin "$BRANCH" || true
+
+          # Always publish onto the badge branch tip — never reset it from main.
+          if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+            git switch -C "$BRANCH" "origin/$BRANCH"
+          else
+            git switch --orphan "$BRANCH"
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          cp /tmp/lightwell-badge.json lightwell-badge.json
+          git add lightwell-badge.json
+          if git diff --cached --quiet; then
+            echo "Badge already up to date ($MATCH_COUNT available)."
+          else
+            git commit -m "chore(lightwell): refresh available library updates badge"
+            if ! git push -u origin "$BRANCH" --force-with-lease; then
+              git fetch origin "$BRANCH"
+              git push -u origin "$BRANCH" --force-with-lease
+            fi
+            echo "Published lightwell-badge.json ($MATCH_COUNT available)."
+          fi
