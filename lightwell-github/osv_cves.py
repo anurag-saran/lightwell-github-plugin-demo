@@ -14,6 +14,7 @@ import math
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -130,6 +131,66 @@ def severity_from_osv_doc(doc: dict[str, Any]) -> tuple[float | None, str | None
             best_score = score
             best_vector = vector
     return best_score, severity_rating(best_score), best_vector
+
+
+# In-memory cache for osv.dev lookups (tests can seed this).
+_OSV_DEV_CACHE: dict[str, dict[str, Any] | None] = {}
+OSV_DEV_API = "https://api.osv.dev/v1/vulns"
+
+
+def fetch_osv_dev(vuln_id: str) -> dict[str, Any] | None:
+    """Fetch one advisory from osv.dev (cached). Returns None on miss/error."""
+    if not vuln_id or os.environ.get("LIGHTWELL_NO_OSV_DEV") == "1":
+        return None
+    if vuln_id in _OSV_DEV_CACHE:
+        return _OSV_DEV_CACHE[vuln_id]
+    try:
+        raw = _http_get(f"{OSV_DEV_API}/{urllib.parse.quote(vuln_id, safe='')}", timeout=15)
+        doc = json.loads(raw.decode("utf-8"))
+        if not isinstance(doc, dict):
+            doc = None
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        doc = None
+    _OSV_DEV_CACHE[vuln_id] = doc
+    return doc
+
+
+def severity_with_fallback(
+    doc: dict[str, Any],
+) -> tuple[float | None, str | None, str | None]:
+    """CVSS from the Lightwell OSV doc, else from GHSA/CVE via osv.dev.
+
+    Public Lightwell demo advisories sometimes omit ``severity``; GHSA aliases
+    usually carry a CVSS v3 vector (e.g. CVE-2023-51074 → GHSA-pfh2-hfmq-phg5).
+    """
+    score, rating, vector = severity_from_osv_doc(doc)
+    if score is not None:
+        return score, rating, vector
+
+    aliases = [a for a in (doc.get("aliases") or []) if isinstance(a, str)]
+    # Prefer GHSA — typically includes CVSS when the CVE shell does not.
+    ordered = sorted(aliases, key=lambda a: (0 if a.startswith("GHSA-") else 1, a))
+    seen: set[str] = set()
+    queue = list(ordered)
+    while queue:
+        aid = queue.pop(0)
+        if aid in seen:
+            continue
+        seen.add(aid)
+        related = fetch_osv_dev(aid)
+        if not related:
+            continue
+        score, rating, vector = severity_from_osv_doc(related)
+        if score is not None:
+            return score, rating, vector
+        for a2 in related.get("aliases") or []:
+            if isinstance(a2, str) and a2 not in seen:
+                # Chase CVE → GHSA one hop.
+                if a2.startswith("GHSA-"):
+                    queue.insert(0, a2)
+                else:
+                    queue.append(a2)
+    return None, None, None
 
 
 def osv_cve_ids(doc: dict[str, Any]) -> list[str]:
@@ -431,7 +492,7 @@ def cves_fixed_by_build(
         cves = osv_cve_ids(doc)
         if not cves:
             continue
-        score, rating, vector = severity_from_osv_doc(doc)
+        score, rating, vector = severity_with_fallback(doc)
         summary = (doc.get("summary") or doc.get("details") or "")[:240]
         for pkg, fixed in osv_fixed_events(doc):
             if not package_matches_gav(pkg, group_id, artifact_id):
@@ -521,9 +582,17 @@ def attach_cves_to_matches(
 
 
 def format_cve_inline(cve: dict[str, Any]) -> str:
-    """Human line for one CVE, e.g. ``CVE-2023-20863 (7.5 HIGH)``."""
-    parts = [cve["id"]]
+    """Markdown CVE with Red Hat Access link + severity for MR/PR tables.
+
+    Example: ``[`CVE-2023-20863`](https://access.redhat.com/security/cve/CVE-2023-20863) (7.5 HIGH)``
+
+    Explicit links are required on GitLab (no CVE autolink like GitHub) and
+    keep clicks on Red Hat Access instead of GitHub GHSA pages.
+    """
+    cid = cve["id"]
+    link = f"[`{cid}`](https://access.redhat.com/security/cve/{cid})"
     if cve.get("cvss") is not None:
-        sev = cve.get("severity") or ""
-        parts.append(f"({cve['cvss']} {sev})".strip())
-    return " ".join(parts)
+        sev = (cve.get("severity") or "").strip()
+        score = cve["cvss"]
+        return f"{link} ({score} {sev})".strip() if sev else f"{link} ({score})"
+    return link

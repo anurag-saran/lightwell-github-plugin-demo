@@ -304,7 +304,7 @@ def _cve_cell(m: dict[str, Any]) -> str:
         parts.append(", ".join(osv_cves.format_cve_inline(c) for c in cves))
     if pending:
         later = m.get("laterOsvFixed") or ""
-        pending_ids = ", ".join(c["id"] for c in pending)
+        pending_ids = ", ".join(osv_cves.format_cve_inline(c) for c in pending)
         suffix = f" at `{later}`" if later else ""
         parts.append(f"_later: {pending_ids}{suffix}_")
     return "; ".join(parts) if parts else "—"
@@ -317,12 +317,6 @@ def _serviced_cell(m: dict[str, Any]) -> str:
     if later and later not in (versions or []):
         cell = f"{cell} _(OSV later: `{later}`)_" if cell else f"_OSV later: `{later}`_"
     return cell
-
-
-def _highest_cell(m: dict[str, Any]) -> str:
-    if m.get("max_cvss") is not None:
-        return f"**{m['max_cvss']}** {m.get('max_severity') or ''}".strip()
-    return "—"
 
 
 def _meaning_cell(m: dict[str, Any]) -> str:
@@ -372,8 +366,8 @@ def render_report(matches: list[dict[str, Any]]) -> str:
         [
             "## Proposed bumps",
             "",
-            "| Dependency | You run | Serviced versions | What it means for you | CVEs fixed (CVSS) | Highest |",
-            "|------------|---------|-------------------|-----------------------|-------------------|---------|",
+            "| Dependency | You run | Serviced versions | What it means for you | CVEs fixed (CVSS) |",
+            "|------------|---------|-------------------|-----------------------|-------------------|",
         ]
     )
     for m in matches:
@@ -381,7 +375,7 @@ def render_report(matches: list[dict[str, Any]]) -> str:
         you_run = f"`{m['fromVersion']}`"
         lines.append(
             f"| {lib} | {you_run} | {_serviced_cell(m)} | {_meaning_cell(m)} | "
-            f"{_cve_cell(m)} | {_highest_cell(m)} |"
+            f"{_cve_cell(m)} |"
         )
 
     apply_matches = [m for m in matches if _should_apply(m)]
@@ -415,7 +409,7 @@ def render_report(matches: list[dict[str, Any]]) -> str:
                 if c.get("cvss") is not None:
                     sev = f" — CVSS {c['cvss']} ({c.get('severity') or '?'})"
                 lines.append(
-                    f"    - [`{c['id']}`](https://nvd.nist.gov/vuln/detail/{c['id']}){sev}"
+                    f"    - [`{c['id']}`](https://access.redhat.com/security/cve/{c['id']}){sev}"
                 )
                 if c.get("summary"):
                     lines.append(f"      - {c['summary']}")
@@ -433,7 +427,7 @@ def render_report(matches: list[dict[str, Any]]) -> str:
                 if c.get("cvss") is not None:
                     sev = f" — CVSS {c['cvss']} ({c.get('severity') or '?'})"
                 lines.append(
-                    f"    - [`{c['id']}`](https://nvd.nist.gov/vuln/detail/{c['id']}){sev}"
+                    f"    - [`{c['id']}`](https://access.redhat.com/security/cve/{c['id']}){sev}"
                 )
 
     lines.extend(["", "## Proposed pom diff", "", "```diff"])

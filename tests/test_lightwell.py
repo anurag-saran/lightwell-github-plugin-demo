@@ -299,13 +299,20 @@ class ReportTests(unittest.TestCase):
             ]
         )
         self.assertIn(
-            "| Dependency | You run | Serviced versions | What it means for you | CVEs fixed (CVSS) | Highest |",
+            "| Dependency | You run | Serviced versions | What it means for you | CVEs fixed (CVSS) |",
             report,
         )
         self.assertIn("CVE-2023-20863", report)
         self.assertIn("6.5", report)
         self.assertIn("MEDIUM", report)
-        self.assertIn("nvd.nist.gov/vuln/detail/CVE-2023-20863", report)
+        self.assertIn("access.redhat.com/security/cve/CVE-2023-20863", report)
+        # Table cell (Proposed bumps) must be a clickable Red Hat Access link + severity.
+        self.assertIn(
+            "[`CVE-2023-20863`](https://access.redhat.com/security/cve/CVE-2023-20863) (6.5 MEDIUM)",
+            report,
+        )
+        self.assertNotIn("| Highest |", report)
+        self.assertNotIn("nvd.nist.gov", report)
 
     def test_report_serviced_other_version_in_bumps_table_only(self) -> None:
         report = scan_poms.render_report(
@@ -359,6 +366,41 @@ class OsvCveTests(unittest.TestCase):
         )
         self.assertEqual(score_med, 6.5)
         self.assertEqual(osv_cves.severity_rating(score_med), "MEDIUM")
+
+    def test_format_cve_inline_markdown_link_and_severity(self) -> None:
+        self.assertEqual(
+            osv_cves.format_cve_inline(
+                {"id": "CVE-2023-20863", "cvss": 6.5, "severity": "MEDIUM"}
+            ),
+            "[`CVE-2023-20863`](https://access.redhat.com/security/cve/CVE-2023-20863) (6.5 MEDIUM)",
+        )
+        self.assertEqual(
+            osv_cves.format_cve_inline({"id": "CVE-2099-0001"}),
+            "[`CVE-2099-0001`](https://access.redhat.com/security/cve/CVE-2099-0001)",
+        )
+
+    def test_severity_fallback_via_ghsa_alias(self) -> None:
+        # Lightwell demo OSV sometimes omits severity; GHSA alias supplies CVSS.
+        lightwell_doc = {
+            "id": "x_RHLW-CVE-2023-51074-2.8.0",
+            "aliases": ["GHSA-pfh2-hfmq-phg5", "CVE-2023-51074"],
+            "severity": [],
+        }
+        osv_cves._OSV_DEV_CACHE.clear()
+        osv_cves._OSV_DEV_CACHE["GHSA-pfh2-hfmq-phg5"] = {
+            "id": "GHSA-pfh2-hfmq-phg5",
+            "severity": [
+                {
+                    "type": "CVSS_V3",
+                    "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+                }
+            ],
+        }
+        score, rating, vector = osv_cves.severity_with_fallback(lightwell_doc)
+        self.assertEqual(score, 5.3)
+        self.assertEqual(rating, "MEDIUM")
+        self.assertIn("AV:N", vector or "")
+        osv_cves._OSV_DEV_CACHE.clear()
 
     def test_attach_cves_from_local_osv_and_sort(self) -> None:
         matches = [
