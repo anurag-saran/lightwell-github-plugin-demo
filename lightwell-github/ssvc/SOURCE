@@ -1,0 +1,9 @@
+Vendored from CERT/CC SSVC at commit bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1.
+
+https://github.com/CERTCC/SSVC/blob/bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1/data/csv/ssvc/deployer_patch_application_priority_1_0_0.csv
+
+SHA-256: 68491dc72505bf0703f32d8a278fc59cdaee4f515922633312bf4cc67f1b1aab
+
+72 data rows. The last header field is quoted and contains commas, so parse with the
+csv module and key by column position (exploitation, exposure, automatable, human
+impact, outcome), not by header text.

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import osv_cves
+import ssvc_risk
 
 REQUIRED_REMEDIATION_KEYS = {
     "groupId",
@@ -378,6 +379,10 @@ def render_report(matches: list[dict[str, Any]]) -> str:
             f"{_cve_cell(m)} |"
         )
 
+    risk_section = ssvc_risk.render_section(matches)
+    if risk_section:
+        lines.extend(["", risk_section])
+
     apply_matches = [m for m in matches if _should_apply(m)]
 
     lines.extend(["", "### Details", ""])
@@ -458,6 +463,58 @@ def render_report(matches: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+PR_BODY_LIMIT = 65536
+_DETAILS_RE = re.compile(r"<details>.*?</details>\n?", re.DOTALL)
+_PLUGIN_URL = "https://github.com/anurag-saran/lightwell-github-plugin-demo"
+
+
+def _drop_details(report: str) -> str:
+    return _DETAILS_RE.sub("", report).rstrip() + "\n"
+
+
+def render_pr_body(report: str, match_count: int) -> str:
+    """PR body capped at GitHub's 65,536 character limit.
+
+    Over-long bodies drop the per-CVE computation traces and point at report.md.
+    """
+    preamble = (
+        "## Summary\n\n"
+        f"Lightwell found **{match_count}** matching library update(s) "
+        "and opened this PR automatically.\n\n"
+        f"Opened by plugin: {_PLUGIN_URL}\n\n"
+        "Branch `lightwell/remediations` is owned by the Lightwell bot "
+        "(pushed with `--force-with-lease`).\n\n"
+        "Bumps below include **CVEs fixed**, **CVSS**, and an SSVC priority "
+        "for internal and external exposure.\n\n"
+        "**Merge** to accept the update, or **close** to reject it.\n\n"
+    )
+    test_plan = (
+        "\n## Test plan\n\n"
+        "- [ ] Review pom.xml version bumps, the CVE/CVSS table, and the SSVC priority\n"
+        "- [ ] Run `mvn -q test` (or the project build)\n"
+        "- [ ] Confirm Lightwell artifacts resolve in CI\n"
+    )
+    full = preamble + report + test_plan
+    if len(full) <= PR_BODY_LIMIT:
+        return full
+    note = (
+        "\n\nComputation traces were omitted so this pull request body stays within "
+        "GitHub's 65,536 character limit. See `report.md`.\n"
+    )
+    reduced = preamble + _drop_details(report).rstrip() + note + test_plan
+    if len(reduced) <= PR_BODY_LIMIT:
+        return reduced
+    room = PR_BODY_LIMIT - len(preamble) - len(note) - len(test_plan)
+    if room < 0:
+        return (preamble + note + test_plan)[:PR_BODY_LIMIT]
+    clipped = _drop_details(report).rstrip()[:room].rstrip() + "\n"
+    return preamble + clipped + note + test_plan
+
+
+def _public_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{k: v for k, v in match.items() if not str(k).startswith("_")} for match in matches]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -503,7 +560,21 @@ def main() -> int:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="Do not fetch OSV over the network (use --osv-dir only)",
+        help="Do not fetch OSV or risk feeds (use --osv-dir and the feed cache)",
+    )
+    parser.add_argument(
+        "--no-risk",
+        action="store_true",
+        help="Skip SSVC and EPSS enrichment",
+    )
+    parser.add_argument(
+        "--risk-config",
+        type=Path,
+        default=None,
+        help=(
+            "Risk config used when the target repo has no .lightwell-risk.json "
+            "(demo configs live in targets/)"
+        ),
     )
     args = parser.parse_args()
 
@@ -571,13 +642,28 @@ def main() -> int:
             m.setdefault("max_cvss", None)
             m.setdefault("max_severity", None)
 
+    if not args.no_risk:
+        risk_config = args.risk_config.resolve() if args.risk_config else None
+        ssvc_risk.apply_risk(
+            matches,
+            root=root,
+            cache_dir=ssvc_risk.DEFAULT_FEED_CACHE,
+            offline=args.offline,
+            risk_config=risk_config,
+        )
+
     report = render_report(matches)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "matches.json").write_text(
-        json.dumps({"matches": matches}, indent=2) + "\n", encoding="utf-8"
+        json.dumps({"matches": _public_matches(matches)}, indent=2) + "\n",
+        encoding="utf-8",
     )
     (out_dir / "report.md").write_text(report + "\n", encoding="utf-8")
+    (out_dir / "pr-body.md").write_text(
+        render_pr_body(report, len(matches)) + "\n",
+        encoding="utf-8",
+    )
 
     print(report)
     print(f"\nWrote {out_dir / 'matches.json'} ({len(matches)} match(es))")

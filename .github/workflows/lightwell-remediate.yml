@@ -115,10 +115,17 @@ jobs:
         working-directory: _app
         run: |
           PLUGIN="../_lightwell/lightwell-github"
+          TARGET_NAME="${TARGET_REPO##*/}"
+          RISK_FILE="../_lightwell/targets/${TARGET_NAME}.lightwell-risk.json"
+          RISK_ARGS=()
+          if [ -f "$RISK_FILE" ]; then
+            RISK_ARGS+=(--risk-config "$RISK_FILE")
+          fi
           python3 "$PLUGIN/scan_poms.py" \
             --root . \
             --catalog "$PLUGIN/catalog.json" \
-            --out-dir /tmp/lightwell-out
+            --out-dir /tmp/lightwell-out \
+            "${RISK_ARGS[@]}"
           MATCH_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/lightwell-out/matches.json'))['matches']))")
           echo "match_count=$MATCH_COUNT" >> "$GITHUB_OUTPUT"
           cat /tmp/lightwell-out/report.md >> "$GITHUB_STEP_SUMMARY"
@@ -191,27 +198,7 @@ jobs:
           PY
           )
 
-          {
-            echo "## Summary"
-            echo
-            echo "Lightwell found **${{ steps.scan.outputs.match_count }}** matching library update(s) and opened this PR automatically."
-            echo
-            echo "Opened by plugin: https://github.com/anurag-saran/lightwell-github-plugin-demo"
-            echo
-            echo "Branch \`lightwell/remediations\` is owned by the Lightwell bot (pushed with \`--force-with-lease\`)."
-            echo
-            echo "Bumps below include **CVEs fixed** and **CVSS** from Lightwell OSV (sorted by highest severity)."
-            echo
-            echo "**Merge** to accept the update, or **close** to reject it."
-            echo
-            cat /tmp/lightwell-out/report.md
-            echo
-            echo "## Test plan"
-            echo
-            echo "- [ ] Review pom.xml version bumps and CVE/CVSS table"
-            echo "- [ ] Run \`mvn -q test\` (or project build)"
-            echo "- [ ] Confirm Lightwell artifacts resolve in CI"
-          } > /tmp/pr-body.md
+          cp /tmp/lightwell-out/pr-body.md /tmp/pr-body.md
 
           git fetch origin main
           # Refresh remote tip so --force-with-lease has current lease info

@@ -1,0 +1,902 @@
+#!/usr/bin/env python3
+"""SSVC deployer priority for Lightwell matches.
+
+The decision table is the vendored CERT/CC CSV. This module does not encode
+outcomes itself. It only gathers Exploitation, Automatable, Human Impact, and
+the two exposure columns, then looks up the row.
+
+Both columns are always computed: internal = Controlled, external = Open.
+Missing data never lowers urgency: unknown tokens are treated as missing and
+the conservative fallback is used.
+"""
+
+from __future__ import annotations
+
+import csv
+import hashlib
+import io
+import json
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+TABLE_PATH = (
+    Path(__file__).resolve().parent
+    / "ssvc"
+    / "deployer_patch_application_priority_1_0_0.csv"
+)
+TABLE_VERSION = "deployer_patch_application_priority_1_0_0"
+TABLE_COMMIT = "bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1"
+EXPECTED_SHA256 = "68491dc72505bf0703f32d8a278fc59cdaee4f515922633312bf4cc67f1b1aab"
+EXPECTED_ROWS = 72
+
+KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+CVE_URL = "https://cveawg.mitre.org/api/cve/{cve_id}"
+EPSS_URL = "https://api.first.org/data/v1/epss?cve="
+EPSS_BATCH = 100
+USER_AGENT = "lightwell-github-plugin-demo"
+
+DEFAULT_FEED_CACHE = Path(__file__).resolve().parent / "out" / "feeds"
+
+# Column positions in the vendored CSV. The outcome header is quoted and
+# contains commas, so these indexes are the contract, not the header text.
+_COL_EXPLOITATION = 1
+_COL_EXPOSURE = 2
+_COL_AUTOMATABLE = 3
+_COL_IMPACT = 4
+_COL_OUTCOME = 5
+
+_EXPLOITATION = {
+    "none": "none",
+    "poc": "public poc",
+    "public poc": "public poc",
+    "active": "active",
+}
+_AUTOMATABLE = {"yes": "yes", "no": "no"}
+_IMPACT = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "very high": "very high",
+}
+_EXPOSURE_CONFIG = {
+    "internal": "internal",
+    "external": "external",
+}
+
+_DISPLAY = {
+    "none": "None",
+    "public poc": "Public PoC",
+    "active": "Active",
+    "yes": "Yes",
+    "no": "No",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "very high": "Very High",
+    "small": "Small",
+    "controlled": "Controlled",
+    "open": "Open",
+    "defer": "Defer",
+    "scheduled": "Scheduled",
+    "out-of-cycle": "Out-of-Cycle",
+    "immediate": "Immediate",
+}
+
+_RANK = {"Immediate": 0, "Out-of-Cycle": 1, "Scheduled": 2, "Defer": 3}
+
+_TABLE: dict[tuple[str, str, str, str], str] | None = None
+
+
+def warn(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
+
+
+def table_sha256(path: Path | None = None) -> str:
+    raw = (path or TABLE_PATH).read_bytes()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def load_table(path: Path | None = None) -> dict[tuple[str, str, str, str], str]:
+    """Map (exploitation, exposure, automatable, human impact) to the outcome token."""
+    global _TABLE
+    if path is None and _TABLE is not None:
+        return _TABLE
+    text = (path or TABLE_PATH).read_text(encoding="utf-8")
+    table: dict[tuple[str, str, str, str], str] = {}
+    for row in csv.reader(io.StringIO(text)):
+        if not row or row[0] == "row":
+            continue
+        key = (
+            row[_COL_EXPLOITATION],
+            row[_COL_EXPOSURE],
+            row[_COL_AUTOMATABLE],
+            row[_COL_IMPACT],
+        )
+        table[key] = row[_COL_OUTCOME]
+    if path is None:
+        _TABLE = table
+    return table
+
+
+def lookup(
+    exploitation: str,
+    exposure: str,
+    automatable: str,
+    human_impact: str,
+    table: dict[tuple[str, str, str, str], str] | None = None,
+) -> str | None:
+    rows = table if table is not None else load_table()
+    return rows.get((exploitation, exposure, automatable, human_impact))
+
+
+def display(token: str) -> str:
+    return _DISPLAY[token]
+
+
+def _norm(raw: object) -> str:
+    return " ".join(str(raw).strip().lower().split())
+
+
+def map_exploitation(raw: object | None) -> str | None:
+    """Map a Vulnrichment or config exploitation token onto the CSV.
+
+    Vulnrichment uses ``poc``. The CSV token is ``public poc``. ``none`` and
+    ``active`` pass through. Anything else is missing.
+    """
+    if raw is None:
+        return None
+    return _EXPLOITATION.get(_norm(raw))
+
+
+def map_automatable(raw: object | None) -> str | None:
+    """Map ``yes`` / ``no``. Anything else is missing."""
+    if raw is None:
+        return None
+    return _AUTOMATABLE.get(_norm(raw))
+
+
+def map_human_impact(raw: object | None) -> str | None:
+    if raw is None:
+        return None
+    return _IMPACT.get(_norm(raw))
+
+
+def map_exposure(raw: object | None) -> str | None:
+    if raw is None:
+        return None
+    return _EXPOSURE_CONFIG.get(_norm(raw))
+
+
+def parse_adp(doc: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Pull Exploitation and Automatable out of a CVE Services record.
+
+    CISA publishes these under ``containers.adp`` where
+    ``providerMetadata.shortName`` is ``CISA-ADP``, on the metric whose
+    ``other.type`` is ``ssvc``. ``options`` is a list of single-key objects.
+    A cached record already flattened to those two fields is accepted too.
+    """
+    if not isinstance(doc, dict) or doc.get("missing"):
+        return None
+    if "containers" not in doc and "exploitation" in doc:
+        if doc.get("exploitation") is None and doc.get("automatable") is None:
+            return None
+        return {
+            "exploitation": doc.get("exploitation"),
+            "automatable": doc.get("automatable"),
+            "timestamp": doc.get("timestamp"),
+            "fetched_at": doc.get("fetched_at"),
+        }
+    for container in (doc.get("containers") or {}).get("adp") or []:
+        if not isinstance(container, dict):
+            continue
+        provider = container.get("providerMetadata") or {}
+        if provider.get("shortName") != "CISA-ADP":
+            continue
+        for metric in container.get("metrics") or []:
+            other = (metric or {}).get("other") or {}
+            if other.get("type") != "ssvc":
+                continue
+            content = other.get("content") or {}
+            found: dict[str, Any] = {}
+            for item in content.get("options") or []:
+                if isinstance(item, dict):
+                    found.update(item)
+            return {
+                "exploitation": found.get("Exploitation"),
+                "automatable": found.get("Automatable"),
+                "timestamp": content.get("timestamp"),
+                "fetched_at": doc.get("fetched_at"),
+            }
+    return None
+
+
+def kev_ids_from_doc(doc: dict[str, Any] | None) -> set[str]:
+    if not isinstance(doc, dict):
+        return set()
+    if "cve_ids" in doc and "vulnerabilities" not in doc:
+        return {str(c) for c in doc.get("cve_ids") or [] if c}
+    found = set()
+    for vuln in doc.get("vulnerabilities") or []:
+        if isinstance(vuln, dict) and vuln.get("cveID"):
+            found.add(str(vuln["cveID"]))
+    return found
+
+
+def parse_epss(doc: dict[str, Any] | None) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    if not isinstance(doc, dict):
+        return scores
+    for row in doc.get("data") or []:
+        if not isinstance(row, dict) or not row.get("cve") or row.get("epss") is None:
+            continue
+        scores[str(row["cve"])] = round(float(row["epss"]), 10)
+    return scores
+
+
+def epss_batches(cve_ids: list[str], size: int = EPSS_BATCH) -> list[list[str]]:
+    if size < 1 or size > EPSS_BATCH:
+        raise ValueError(f"EPSS batch size must be 1..{EPSS_BATCH}")
+    return [cve_ids[i : i + size] for i in range(0, len(cve_ids), size)]
+
+
+def load_risk_config(path: Path | None, *, demo: bool) -> dict[str, Any]:
+    """Load a risk config. Invalid fields are dropped and recorded in warnings."""
+    cfg: dict[str, Any] = {
+        "human_impact": None,
+        "exposure": None,
+        "overrides": {},
+        "demo": demo,
+        "warnings": [],
+    }
+    if path is None:
+        return cfg
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        cfg["warnings"].append(f"ignoring risk config {path}: {exc}")
+        return cfg
+    if not isinstance(raw, dict):
+        cfg["warnings"].append(f"ignoring risk config {path}: expected an object")
+        return cfg
+    if "human_impact" in raw:
+        mapped = map_human_impact(raw.get("human_impact"))
+        if mapped:
+            cfg["human_impact"] = mapped
+        else:
+            cfg["warnings"].append(
+                f"ignoring human_impact {raw.get('human_impact')!r} in {path}"
+            )
+    if "exposure" in raw:
+        mapped = map_exposure(raw.get("exposure"))
+        if mapped:
+            cfg["exposure"] = mapped
+        else:
+            cfg["warnings"].append(
+                f"ignoring exposure {raw.get('exposure')!r} in {path}"
+            )
+    overrides = raw.get("overrides", {})
+    if overrides is None:
+        overrides = {}
+    if not isinstance(overrides, dict):
+        cfg["warnings"].append(f"ignoring overrides in {path}: expected an object")
+        overrides = {}
+    clean: dict[str, dict[str, str]] = {}
+    for cve_id, body in overrides.items():
+        if not isinstance(body, dict):
+            cfg["warnings"].append(f"ignoring override for {cve_id}: expected an object")
+            continue
+        entry: dict[str, str] = {}
+        for field, mapper in (
+            ("exploitation", map_exploitation),
+            ("automatable", map_automatable),
+            ("human_impact", map_human_impact),
+        ):
+            if field not in body:
+                continue
+            mapped = mapper(body.get(field))
+            if mapped:
+                entry[field] = mapped
+            else:
+                cfg["warnings"].append(
+                    f"ignoring {cve_id} {field} {body.get(field)!r} in {path}"
+                )
+        note = body.get("note")
+        if isinstance(note, str) and note.strip():
+            entry["note"] = note.strip()
+        clean[str(cve_id)] = entry
+    cfg["overrides"] = clean
+    return cfg
+
+
+def resolve_config(root: Path, risk_config: Path | None) -> dict[str, Any]:
+    """Prefer the target's own file. ``--risk-config`` is the demo fallback."""
+    target = root / ".lightwell-risk.json"
+    if target.is_file():
+        return load_risk_config(target, demo=False)
+    if risk_config is not None:
+        return load_risk_config(risk_config, demo=True)
+    return load_risk_config(None, demo=False)
+
+
+def _point(
+    token: str,
+    source: str,
+    fetched_at: str | None,
+    assumed: bool,
+    note: str | None = None,
+) -> dict[str, Any]:
+    point: dict[str, Any] = {
+        "value": display(token),
+        "source": source,
+        "fetched_at": fetched_at if not assumed else None,
+        "assumed": assumed,
+    }
+    if note:
+        point["note"] = note
+    return point
+
+
+def _trace(exploitation: str, exposure: str, automatable: str, impact: str, outcome: str) -> str:
+    return (
+        f"Exploitation={display(exploitation)} · Exposure={display(exposure)} · "
+        f"Automatable={display(automatable)} · Human Impact={display(impact)} "
+        f"→ {display(outcome)}"
+    )
+
+
+def _conservative(token: str | None, default: str) -> str:
+    """A missing lookup must not lower urgency."""
+    return token or "immediate"
+
+
+def build_cve_risk(
+    cve_id: str,
+    *,
+    in_kev: bool,
+    adp: dict[str, Any] | None,
+    epss: float | None,
+    epss_fetched_at: str | None,
+    config: dict[str, Any],
+    fetched_at: str | None,
+    table: dict[tuple[str, str, str, str], str] | None = None,
+) -> dict[str, Any]:
+    rows = table if table is not None else load_table()
+    override = (config.get("overrides") or {}).get(cve_id) or {}
+    note = override.get("note")
+    adp = adp or {}
+
+    adp_fetched = adp.get("fetched_at") or fetched_at
+    if override.get("exploitation"):
+        expl_token = override["exploitation"]
+        exploitation = _point(expl_token, "customer-provided", None, False, note)
+    elif in_kev:
+        expl_token = "active"
+        exploitation = _point(expl_token, "cisa-kev", fetched_at, False)
+    else:
+        mapped = map_exploitation(adp.get("exploitation"))
+        if mapped:
+            expl_token = mapped
+            exploitation = _point(expl_token, "cisa-adp", adp_fetched, False)
+        else:
+            expl_token = "public poc"
+            exploitation = _point(expl_token, "assumed", None, True)
+
+    if override.get("automatable"):
+        auto_token = override["automatable"]
+        automatable = _point(auto_token, "customer-provided", None, False, note)
+    else:
+        mapped_auto = map_automatable(adp.get("automatable"))
+        if mapped_auto:
+            auto_token = mapped_auto
+            automatable = _point(auto_token, "cisa-adp", adp_fetched, False)
+        else:
+            auto_token = "yes"
+            automatable = _point(auto_token, "assumed", None, True)
+
+    if override.get("human_impact"):
+        impact = _point(override["human_impact"], "customer-provided", None, False, note)
+        impact_token = override["human_impact"]
+    elif config.get("human_impact"):
+        impact = _point(config["human_impact"], "config", None, False)
+        impact_token = config["human_impact"]
+    else:
+        impact = _point("medium", "assumed", None, True)
+        impact_token = "medium"
+
+    internal_token = _conservative(
+        lookup(expl_token, "controlled", auto_token, impact_token, rows),
+        "immediate",
+    )
+    external_token = _conservative(
+        lookup(expl_token, "open", auto_token, impact_token, rows),
+        "immediate",
+    )
+    risk: dict[str, Any] = {
+        "exploitation": exploitation,
+        "automatable": automatable,
+        "human_impact": impact,
+        "outcome_internal": display(internal_token),
+        "outcome_external": display(external_token),
+        "exposure_declared": config.get("exposure"),
+        "epss": epss,
+        "epss_fetched_at": epss_fetched_at if epss is not None else None,
+        "trace_internal": _trace(
+            expl_token, "controlled", auto_token, impact_token, internal_token
+        ),
+        "trace_external": _trace(
+            expl_token, "open", auto_token, impact_token, external_token
+        ),
+        "demo_setting": bool(config.get("demo")) and impact["source"] == "config",
+    }
+    if note:
+        risk["note"] = note
+    return risk
+
+
+def _rank_key(cve: dict[str, Any]) -> tuple[Any, ...]:
+    risk = cve.get("risk") or {}
+    epss = risk.get("epss")
+    cvss = cve.get("cvss")
+    epss_known = isinstance(epss, (int, float))
+    cvss_known = isinstance(cvss, (int, float))
+    return (
+        _RANK.get(risk.get("outcome_external"), 0),
+        _RANK.get(risk.get("outcome_internal"), 0),
+        0 if epss_known else 1,
+        -(float(epss) if epss_known else 0.0),
+        0 if cvss_known else 1,
+        -(float(cvss) if cvss_known else 0.0),
+    )
+
+
+def sort_matches(matches: list[dict[str, Any]]) -> None:
+    """Most urgent external outcome first. Matches with no CVEs sort last."""
+
+    def key(match: dict[str, Any]) -> tuple[Any, ...]:
+        cves = [c for c in (match.get("cves") or []) if c.get("risk")]
+        name = (match.get("artifactId") or "", match.get("groupId") or "")
+        if not cves:
+            return (1, 0, 0, 0, 0.0, 0, 0.0, name)
+        worst = min(cves, key=_rank_key)
+        return (0, *_rank_key(worst), name)
+
+    matches.sort(key=key)
+
+
+def coverage_counts(matches: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """Return (cves with any CISA decision point, cve count, assumed values)."""
+    found = 0
+    total = 0
+    assumed = 0
+    for match in matches:
+        for cve in match.get("cves") or []:
+            risk = cve.get("risk")
+            if not risk:
+                continue
+            total += 1
+            got_feed = False
+            for name in ("exploitation", "automatable", "human_impact"):
+                point = risk.get(name) or {}
+                if point.get("assumed"):
+                    assumed += 1
+                elif name != "human_impact":
+                    got_feed = True
+            if got_feed:
+                found += 1
+    return found, total, assumed
+
+
+def _day(value: str | None) -> str | None:
+    if not value:
+        return None
+    return str(value)[:10]
+
+
+def _http_json(url: str) -> dict[str, Any]:
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode())
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected a JSON object from {url}")
+    return payload
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _fetch_kev(cache_dir: Path, offline: bool, now: str) -> tuple[set[str], str | None]:
+    path = cache_dir / "kev.json"
+    if not offline:
+        try:
+            doc = _http_json(KEV_URL)
+            ids = sorted(kev_ids_from_doc(doc))
+            _write_json(path, {"fetched_at": now, "cve_ids": ids})
+            return set(ids), now
+        except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            warn(f"KEV fetch failed ({exc}); using the cache if present")
+    cached = _read_json(path)
+    if cached and "cve_ids" in cached:
+        if not offline:
+            warn("using cached KEV catalog")
+        return set(kev_ids_from_doc(cached)), cached.get("fetched_at")
+    warn("KEV catalog unavailable; Exploitation falls back to Public PoC where ADP is missing")
+    return set(), None
+
+
+def _fetch_adp(
+    cve_ids: list[str], cache_dir: Path, offline: bool, now: str
+) -> dict[str, dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+    for cve_id in cve_ids:
+        path = cache_dir / "adp" / f"{cve_id}.json"
+        if not offline:
+            try:
+                doc = _http_json(CVE_URL.format(cve_id=cve_id))
+                parsed = parse_adp(doc) or {}
+                payload = {
+                    "fetched_at": now,
+                    "exploitation": parsed.get("exploitation"),
+                    "automatable": parsed.get("automatable"),
+                    "timestamp": parsed.get("timestamp"),
+                }
+                _write_json(path, payload)
+                if parsed.get("exploitation") or parsed.get("automatable"):
+                    found[cve_id] = payload
+                continue
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    _write_json(
+                        path,
+                        {
+                            "fetched_at": now,
+                            "missing": True,
+                            "exploitation": None,
+                            "automatable": None,
+                        },
+                    )
+                    continue
+                warn(f"{cve_id}: CVE record fetch failed ({exc}); using the cache if present")
+            except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+                warn(f"{cve_id}: CVE record fetch failed ({exc}); using the cache if present")
+        cached = _read_json(path)
+        parsed = parse_adp(cached)
+        if parsed:
+            found[cve_id] = parsed
+        elif cached is None:
+            warn(f"{cve_id}: no cached CISA ADP record")
+    return found
+
+
+def _fetch_epss(
+    cve_ids: list[str], cache_dir: Path, offline: bool, now: str
+) -> tuple[dict[str, float | None], str | None]:
+    path = cache_dir / "epss.json"
+    cached = _read_json(path) or {}
+    stored = cached.get("scores") if isinstance(cached.get("scores"), dict) else {}
+    if offline:
+        scores: dict[str, float | None] = {}
+        for cve_id in cve_ids:
+            raw = stored.get(cve_id) if cve_id in stored else None
+            scores[cve_id] = float(raw) if isinstance(raw, (int, float)) else None
+        return scores, cached.get("fetched_at")
+
+    fresh: dict[str, float | None] = {}
+    fetched_at: str | None = now
+    for batch in epss_batches(cve_ids):
+        try:
+            doc = _http_json(EPSS_URL + ",".join(batch))
+            parsed = parse_epss(doc)
+            for cve_id in batch:
+                fresh[cve_id] = parsed.get(cve_id)
+        except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            warn(f"EPSS fetch failed for {len(batch)} CVE(s) ({exc}); using cached scores")
+            fetched_at = cached.get("fetched_at") or now
+            for cve_id in batch:
+                raw = stored.get(cve_id) if cve_id in stored else None
+                fresh[cve_id] = float(raw) if isinstance(raw, (int, float)) else None
+    merged = dict(stored)
+    merged.update(fresh)
+    _write_json(path, {"fetched_at": fetched_at, "scores": merged})
+    return fresh, fetched_at
+
+
+def _stamp(matches: list[dict[str, Any]], as_of: str) -> None:
+    meta = {"as_of": as_of, "table": TABLE_VERSION}
+    for match in matches:
+        match["_risk_meta"] = meta
+
+
+def _apply_records(
+    matches: list[dict[str, Any]],
+    *,
+    config: dict[str, Any],
+    kev: set[str],
+    adp_by_cve: dict[str, dict[str, Any]],
+    epss_by_cve: dict[str, float | None],
+    fetched_at: str | None,
+    epss_fetched_at: str | None,
+    as_of: str,
+) -> None:
+    table = load_table()
+    for match in matches:
+        for cve in match.get("cves") or []:
+            cve_id = cve.get("id")
+            if not cve_id:
+                continue
+            score = epss_by_cve.get(cve_id)
+            cve["risk"] = build_cve_risk(
+                cve_id,
+                in_kev=cve_id in kev,
+                adp=adp_by_cve.get(cve_id),
+                epss=score if isinstance(score, (int, float)) else None,
+                epss_fetched_at=epss_fetched_at,
+                config=config,
+                fetched_at=fetched_at,
+                table=table,
+            )
+    sort_matches(matches)
+    _stamp(matches, as_of)
+
+
+def apply_risk(
+    matches: list[dict[str, Any]],
+    *,
+    root: Path,
+    cache_dir: Path,
+    offline: bool = False,
+    risk_config: Path | None = None,
+    now: str | None = None,
+) -> None:
+    """Attach SSVC outcomes. Network and parse errors fall back; they do not raise."""
+    try:
+        _apply_risk(
+            matches,
+            root=root,
+            cache_dir=cache_dir,
+            offline=offline,
+            risk_config=risk_config,
+            now=now,
+        )
+    except Exception as exc:
+        warn(f"SSVC enrichment failed ({exc}); using conservative defaults")
+        try:
+            config = resolve_config(root, risk_config)
+            for message in config.get("warnings") or []:
+                warn(message)
+            as_of = _day(now) or "unknown"
+            _apply_records(
+                matches,
+                config=config,
+                kev=set(),
+                adp_by_cve={},
+                epss_by_cve={},
+                fetched_at=None,
+                epss_fetched_at=None,
+                as_of=as_of,
+            )
+        except Exception as exc2:
+            warn(f"SSVC enrichment skipped ({exc2})")
+
+
+def _apply_risk(
+    matches: list[dict[str, Any]],
+    *,
+    root: Path,
+    cache_dir: Path,
+    offline: bool,
+    risk_config: Path | None,
+    now: str | None,
+) -> None:
+    stamp = now or datetime.now(timezone.utc).date().isoformat()
+    config = resolve_config(root, risk_config)
+    for message in config.get("warnings") or []:
+        warn(message)
+    cve_ids: list[str] = []
+    seen: set[str] = set()
+    for match in matches:
+        for cve in match.get("cves") or []:
+            cve_id = cve.get("id")
+            if cve_id and cve_id not in seen:
+                seen.add(cve_id)
+                cve_ids.append(cve_id)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    kev, kev_at = _fetch_kev(cache_dir, offline, stamp)
+    adp = _fetch_adp(cve_ids, cache_dir, offline, stamp) if cve_ids else {}
+    epss, epss_at = _fetch_epss(cve_ids, cache_dir, offline, stamp) if cve_ids else ({}, None)
+    dates = [d for d in (_day(kev_at), _day(epss_at), _day(stamp)) if d]
+    for record in adp.values():
+        day = _day(record.get("fetched_at"))
+        if day:
+            dates.append(day)
+    as_of = max(dates) if dates else stamp
+    _apply_records(
+        matches,
+        config=config,
+        kev=kev,
+        adp_by_cve=adp,
+        epss_by_cve=epss,
+        fetched_at=_day(kev_at) or _day(stamp),
+        epss_fetched_at=_day(epss_at),
+        as_of=as_of,
+    )
+
+
+def _impact_label(point: dict[str, Any], demo: bool) -> str:
+    label = str(point.get("value") or "")
+    if point.get("assumed"):
+        return f"{label} (assumed)"
+    if demo and point.get("source") == "config":
+        return f"{label} (demo setting)"
+    return label
+
+
+def _decision_label(point: dict[str, Any]) -> str:
+    label = str(point.get("value") or "")
+    if point.get("assumed"):
+        return f"{label} (assumed)"
+    return label
+
+
+def _outcome_label(outcome: str, declared: bool) -> str:
+    if declared:
+        return f"{outcome} (declared)"
+    return outcome
+
+
+def format_epss(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.5f}"
+
+
+def _library_cell(match: dict[str, Any]) -> str:
+    return f"{match.get('artifactId')} {match.get('fromVersion')} → {match.get('toVersion')}"
+
+
+def _input_line(label: str, point: dict[str, Any], shown: str) -> str:
+    parts = [f"{label}: {shown}", f"source {point.get('source')}"]
+    fetched = point.get("fetched_at")
+    if fetched:
+        parts.append(f"fetched {fetched}")
+    note = point.get("note")
+    if note and point.get("source") == "customer-provided":
+        parts.append(note)
+    return "- " + " · ".join(parts)
+
+
+def render_section(matches: list[dict[str, Any]]) -> str:
+    """Markdown SSVC section, or an empty string when enrichment did not run."""
+    if not any(m.get("_risk_meta") for m in matches):
+        return ""
+    meta = next(m["_risk_meta"] for m in matches if m.get("_risk_meta"))
+    found, total, assumed = coverage_counts(matches)
+    lines = [
+        "## SSVC priority",
+        "",
+        f"Risk data as of {meta.get('as_of')} · SSVC table {meta.get('table')}",
+        "",
+        f"SSVC data found for {found} of {total} CVEs; {assumed} values assumed.",
+        "",
+        "| CVE | Library (current → Lightwell build) | CVSS | Exploited? | Automatable? "
+        "| App impact | If internal | If external | EPSS |",
+        "|-----|--------------------------------------|------|------------|-------------|"
+        "------------|-------------|-------------|----------------|",
+    ]
+    rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    empty: list[dict[str, Any]] = []
+    for match in matches:
+        cves = [c for c in (match.get("cves") or []) if c.get("risk")]
+        if not cves:
+            empty.append(match)
+            continue
+        for cve in cves:
+            rows.append((match, cve))
+    rows.sort(key=lambda item: (*_rank_key(item[1]), item[1].get("id") or ""))
+    for match, cve in rows:
+        risk = cve["risk"]
+        declared = risk.get("exposure_declared")
+        cvss = cve.get("cvss")
+        cvss_cell = "—" if cvss is None else f"{cvss:g}"
+        cve_id = cve.get("id")
+        link = f"[`{cve_id}`](https://access.redhat.com/security/cve/{cve_id})"
+        lines.append(
+            "| {cve} | {lib} | {cvss} | {expl} | {auto} | {impact} | {internal} | {external} | {epss} |".format(
+                cve=link,
+                lib=_library_cell(match),
+                cvss=cvss_cell,
+                expl=_decision_label(risk["exploitation"]),
+                auto=_decision_label(risk["automatable"]),
+                impact=_impact_label(risk["human_impact"], bool(risk.get("demo_setting"))),
+                internal=_outcome_label(
+                    risk["outcome_internal"], declared == "internal"
+                ),
+                external=_outcome_label(
+                    risk["outcome_external"], declared == "external"
+                ),
+                epss=format_epss(risk.get("epss")),
+            )
+        )
+    for match in empty:
+        lines.append(
+            f"| — | {_library_cell(match)} | — | — | — | — | — | — | — |"
+        )
+    lines.extend(
+        [
+            "",
+            'Immediate = act now (the "Big Red Button") · '
+            "Out-of-Cycle = security patch lane, ahead of the feature release · "
+            "Scheduled = next normal release · Defer = track.",
+            "",
+        ]
+    )
+    for match, cve in rows:
+        risk = cve["risk"]
+        lines.append("<details>")
+        lines.append(f"<summary>How this was computed: {cve.get('id')}</summary>")
+        lines.append("")
+        lines.append(
+            _input_line(
+                "Exploitation",
+                risk["exploitation"],
+                _decision_label(risk["exploitation"]),
+            )
+        )
+        lines.append(
+            _input_line(
+                "Automatable",
+                risk["automatable"],
+                _decision_label(risk["automatable"]),
+            )
+        )
+        lines.append(
+            _input_line(
+                "Human Impact",
+                risk["human_impact"],
+                _impact_label(risk["human_impact"], bool(risk.get("demo_setting"))),
+            )
+        )
+        declared = risk.get("exposure_declared")
+        if declared:
+            lines.append(
+                f"- System exposure: {declared} (declared). "
+                "Both columns are still computed "
+                "(internal = Controlled, external = Open)."
+            )
+        else:
+            lines.append(
+                "- System exposure: internal = Controlled, external = Open. "
+                "Both columns are always computed."
+            )
+        if risk.get("epss") is None:
+            lines.append("- EPSS: n/a")
+        else:
+            fetched = risk.get("epss_fetched_at")
+            extra = f" · fetched {fetched}" if fetched else ""
+            lines.append(
+                f"- EPSS: {format_epss(risk.get('epss'))} · source first-epss{extra}"
+            )
+        if risk.get("note"):
+            lines.append(f"- Note: {risk['note']}")
+        lines.append(f"- If internal: {risk['trace_internal']}")
+        lines.append(f"- If external: {risk['trace_external']}")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+    return "\n".join(lines).rstrip()
