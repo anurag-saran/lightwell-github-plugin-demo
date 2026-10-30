@@ -754,6 +754,50 @@ def _decision_label(point: dict[str, Any]) -> str:
     return label
 
 
+def _linked_decision(point: dict[str, Any], cve_id: str | None) -> str:
+    """Value text. A CISA value links to the record it was read from."""
+    label = _decision_label(point)
+    source = point.get("source")
+    if source == "cisa-adp" and cve_id:
+        return f"[{label}](https://www.cve.org/CVERecord?id={cve_id})"
+    if source == "cisa-kev":
+        return f"[{label}]({_KEV_URL})"
+    return label
+
+
+def _epss_cell(value: float | None, cve_id: str | None) -> str:
+    shown = format_epss(value)
+    if value is None or not cve_id:
+        return shown
+    return f"[{shown}](https://api.first.org/data/v1/epss?cve={cve_id})"
+
+
+def _most_urgent(outcomes: list[str]) -> str | None:
+    known = [outcome for outcome in outcomes if outcome in _RANK]
+    if not known:
+        return None
+    return min(known, key=lambda outcome: _RANK[outcome])
+
+
+def _priority_rollup(
+    matches: list[dict[str, Any]],
+) -> tuple[str | None, str | None, str | None]:
+    """Worst internal outcome, worst external outcome, and declared exposure."""
+    internals: list[str] = []
+    externals: list[str] = []
+    declared: str | None = None
+    for match in matches:
+        for cve in match.get("cves") or []:
+            risk = cve.get("risk") or {}
+            if risk.get("outcome_internal"):
+                internals.append(risk["outcome_internal"])
+            if risk.get("outcome_external"):
+                externals.append(risk["outcome_external"])
+            if declared is None and risk.get("exposure_declared"):
+                declared = risk["exposure_declared"]
+    return _most_urgent(internals), _most_urgent(externals), declared
+
+
 def _source_phrase(source: str, cve_id: str | None) -> str:
     if source == "cisa-adp" and cve_id:
         return f"source [CISA ADP](https://www.cve.org/CVERecord?id={cve_id})"
@@ -772,6 +816,10 @@ def _source_phrase(source: str, cve_id: str | None) -> str:
         return "source customer-provided"
     return f"source {source}"
 
+
+_CISA_ADP_URL = "https://github.com/cisagov/vulnrichment"
+_FIRST_EPSS_URL = "https://www.first.org/epss/"
+_KEV_URL = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
 
 # Shields badges are the colored text GitHub keeps in a pull-request table.
 # A single hyphen in the badge path is the color separator; a double hyphen is a hyphen.
@@ -863,15 +911,58 @@ def _input_line(label: str, point: dict[str, Any], shown: str, cve_id: str | Non
     return "- " + " · ".join(parts)
 
 
+def _priority_heading(internal: str | None, external: str | None, declared: str | None) -> list[str]:
+    """Section title plus the worst outcome across every library."""
+    if declared == "internal":
+        headline = internal
+    elif declared == "external":
+        headline = external
+    else:
+        headline = _most_urgent([item for item in (internal, external) if item])
+    if not headline:
+        return ["## SSVC priority", ""]
+    lines = [f"## SSVC priority: {_shield(headline, _OUTCOME_COLOR[headline])}", ""]
+    if internal and external and internal != external:
+        external_note = " (declared)" if declared == "external" else ""
+        internal_note = " (declared)" if declared == "internal" else ""
+        lines.append(
+            "Highest across these libraries: "
+            f"{_shield(external, _OUTCOME_COLOR[external])} if the app is external{external_note}, "
+            f"{_shield(internal, _OUTCOME_COLOR[internal])} if the app is internal{internal_note}."
+        )
+    elif internal and external:
+        lines.append(
+            "Highest across these libraries is "
+            f"{_shield(internal, _OUTCOME_COLOR[internal])}, "
+            "for an internal or an external deployment."
+        )
+    lines.append("")
+    return lines
+
+
+def _table_header() -> list[str]:
+    return [
+        "| CVE | Library (current → Lightwell build) | CVSS<br>Lightwell OSV "
+        f"| EPSS<br>[FIRST]({_FIRST_EPSS_URL}) "
+        f"| Exploitation<br>[CISA ADP]({_CISA_ADP_URL}) "
+        f"| Automatable<br>[CISA ADP]({_CISA_ADP_URL}) "
+        "| App impact<br>CMDB | If the app is internal | If the app is external |",
+        "|-----|--------------------------------------|----------------------|"
+        "------------------------|------------------------------|"
+        "-----------------------------|--------------|------------------------|"
+        "------------------------|",
+    ]
+
+
 def render_section(matches: list[dict[str, Any]]) -> str:
     """Markdown SSVC section, or an empty string when enrichment did not run."""
     if not any(m.get("_risk_meta") for m in matches):
         return ""
     meta = next(m["_risk_meta"] for m in matches if m.get("_risk_meta"))
     found, total, assumed = coverage_counts(matches)
+    internal, external, declared = _priority_rollup(matches)
     lines = [
-        "## SSVC priority",
-        "",
+        *_priority_heading(internal, external, declared),
         "SSVC (Stakeholder-Specific Vulnerability Categorization) chooses how fast "
         "to patch: Immediate, Out-of-Cycle, Scheduled, or Defer. It uses Exploitation, "
         "Automatable, this application's impact, and whether the system is internal or external.",
@@ -880,10 +971,7 @@ def render_section(matches: list[dict[str, Any]]) -> str:
         "",
         f"SSVC data found for {found} of {total} CVEs; {assumed} values had no source record.",
         "",
-        "| CVE | Library (current → Lightwell build) | CVSS | Exploitation | Automatable "
-        "| App impact | If the app is internal | If the app is external | EPSS |",
-        "|-----|--------------------------------------|------|--------------|-------------|"
-        "------------|------------------------|------------------------|------|",
+        *_table_header(),
     ]
     rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
     empty: list[dict[str, Any]] = []
@@ -906,12 +994,13 @@ def render_section(matches: list[dict[str, Any]]) -> str:
             cvss_cell = f"[{cvss:g}](https://access.redhat.com/security/cve/{cve_id})"
         link = f"[`{cve_id}`](https://access.redhat.com/security/cve/{cve_id})"
         lines.append(
-            "| {cve} | {lib} | {cvss} | {expl} | {auto} | {impact} | {internal} | {external} | {epss} |".format(
+            "| {cve} | {lib} | {cvss} | {epss} | {expl} | {auto} | {impact} | {internal} | {external} |".format(
                 cve=link,
                 lib=_library_cell(match),
                 cvss=cvss_cell,
-                expl=_decision_label(risk["exploitation"]),
-                auto=_decision_label(risk["automatable"]),
+                epss=_epss_cell(risk.get("epss"), cve_id),
+                expl=_linked_decision(risk["exploitation"], cve_id),
+                auto=_linked_decision(risk["automatable"], cve_id),
                 impact=_impact_label(risk["human_impact"], bool(risk.get("demo_setting"))),
                 internal=_outcome_label(
                     risk["outcome_internal"], declared == "internal"
@@ -919,7 +1008,6 @@ def render_section(matches: list[dict[str, Any]]) -> str:
                 external=_outcome_label(
                     risk["outcome_external"], declared == "external"
                 ),
-                epss=format_epss(risk.get("epss")),
             )
         )
     for match in empty:

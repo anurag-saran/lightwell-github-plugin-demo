@@ -105,7 +105,8 @@ python3 lightwell-github/scan_poms.py --root /path/to/app \
 Skip CVE enrichment entirely: add `--no-osv`.
 
 The remediation PR / `report.md` lists each bump with **CVEs fixed** and **CVSS**
-severity (from Lightwell OSV), then an SSVC priority table. Matches are ordered by
+severity (from Lightwell OSV), then an SSVC priority table. The section heading
+shows the highest priority across every library. Matches are ordered by
 external outcome, then internal outcome, then EPSS, then CVSS. A match with no CVEs
 sorts last. `--no-risk` leaves the CVSS ordering from the OSV join.
 
@@ -121,13 +122,16 @@ that file. They are not reimplemented in Python.
 |--------|---------|
 | CVE | Advisory fixed by the Lightwell build |
 | Library (current → Lightwell build) | Dependency the scan matched |
-| CVSS | Base score from Lightwell OSV. Kept alongside SSVC |
-| Exploitation | None, Public PoC, or Active |
-| Automatable | No or Yes |
-| App impact | SSVC Human Impact for this application |
+| CVSS | Base score from Lightwell OSV. The number links to the Red Hat CVE page |
+| EPSS | [FIRST](https://www.first.org/epss/) exploit probability. The number links to that CVE. Missing is `n/a`. Tie-break only |
+| Exploitation | None, Public PoC, or Active, from [CISA ADP](https://github.com/cisagov/vulnrichment). The value links to that CVE record |
+| Automatable | No or Yes, from the same CISA ADP block. The value links to that CVE record |
+| App impact | SSVC Human Impact from the CMDB for this application |
 | If the app is internal | Colored outcome when System Exposure is Controlled |
 | If the app is external | Colored outcome when System Exposure is Open |
-| EPSS | FIRST exploit probability, display and tie-break only. Missing is `n/a` |
+
+The heading is the most urgent of those two outcome columns. When a config declares
+`internal` or `external`, the heading uses that column.
 
 Both exposure columns are always computed. The scan does not ask which one you are.
 A config `exposure` of `internal` or `external` marks that column `(declared)` and

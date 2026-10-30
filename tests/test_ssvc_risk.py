@@ -199,7 +199,13 @@ class DecisionTests(unittest.TestCase):
         self.assertIn("source CMDB", section)
         self.assertNotIn("(demo setting)", section)
         self.assertNotIn("(assumed)", section)
-        self.assertIn("| Exploitation | Automatable |", section)
+        self.assertIn("## SSVC priority: ![Out-of-Cycle]", section)
+        self.assertIn("Highest across these libraries:", section)
+        self.assertIn("Exploitation<br>[CISA ADP](https://github.com/cisagov/vulnrichment)", section)
+        self.assertIn("App impact<br>CMDB", section)
+        self.assertIn("EPSS<br>[FIRST](https://www.first.org/epss/)", section)
+        header = next(line for line in section.splitlines() if line.startswith("| CVE |"))
+        self.assertLess(header.index("EPSS"), header.index("Exploitation"))
         self.assertNotIn("Exploited?", section)
         self.assertIn("If the app is internal", section)
         self.assertIn("![Scheduled](https://img.shields.io/badge/Scheduled-a16207", section)
@@ -243,6 +249,8 @@ class DecisionTests(unittest.TestCase):
         section = ssvc_risk.render_section(
             [_match("json-path", [_cve("CVE-2024-0000", risk, 7.5)])]
         )
+        self.assertIn("## SSVC priority: ![Out-of-Cycle]", section)
+        self.assertIn("if the app is external (declared)", section)
         self.assertIn("Out-of-Cycle (declared)", section)
         self.assertNotIn("Scheduled (declared)", section)
         self.assertIn("Mythos finding #123", section)
@@ -345,6 +353,15 @@ class OrderingTests(unittest.TestCase):
             ],
         )
         section = ssvc_risk.render_section(matches)
+        self.assertIn("## SSVC priority: ![Immediate]", section)
+        self.assertIn(
+            "[Active](https://www.cve.org/CVERecord?id=CVE-IMM)",
+            section,
+        )
+        self.assertIn(
+            "[0.10000](https://api.first.org/data/v1/epss?cve=CVE-IMM)",
+            section,
+        )
         self.assertLess(section.index("CVE-IMM"), section.index("CVE-OOC"))
         self.assertLess(section.index("CVE-EPSS-HIGH"), section.index("CVE-EPSS-LOW"))
         self.assertLess(section.index("CVE-EPSS-LOW"), section.index("CVE-EPSS-NONE"))
