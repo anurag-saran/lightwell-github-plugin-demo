@@ -820,6 +820,10 @@ def _source_phrase(source: str, cve_id: str | None) -> str:
 _CISA_ADP_URL = "https://github.com/cisagov/vulnrichment"
 _FIRST_EPSS_URL = "https://www.first.org/epss/"
 _KEV_URL = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
+_CERT_TABLE_URL = (
+    "https://github.com/CERTCC/SSVC/blob/bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1/"
+    "data/csv/ssvc/deployer_patch_application_priority_1_0_0.csv"
+)
 
 # Shields badges are the colored text GitHub keeps in a pull-request table.
 # A single hyphen in the badge path is the color separator; a double hyphen is a hyphen.
@@ -946,7 +950,9 @@ def _table_header() -> list[str]:
         f"| EPSS<br>[FIRST]({_FIRST_EPSS_URL}) "
         f"| Exploitation<br>[CISA ADP]({_CISA_ADP_URL}) "
         f"| Automatable<br>[CISA ADP]({_CISA_ADP_URL}) "
-        "| App impact<br>CMDB | If the app is internal | If the app is external |",
+        "| App impact<br>CMDB "
+        f"| [If the app is internal]({_CERT_TABLE_URL}) "
+        f"| [If the app is external]({_CERT_TABLE_URL}) |",
         "|-----|--------------------------------------|----------------------|"
         "------------------------|------------------------------|"
         "-----------------------------|--------------|------------------------|"

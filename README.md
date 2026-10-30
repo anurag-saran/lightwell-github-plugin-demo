@@ -127,8 +127,8 @@ that file. They are not reimplemented in Python.
 | Exploitation | None, Public PoC, or Active, from [CISA ADP](https://github.com/cisagov/vulnrichment). The value links to that CVE record |
 | Automatable | No or Yes, from the same CISA ADP block. The value links to that CVE record |
 | App impact | SSVC Human Impact from the CMDB for this application |
-| If the app is internal | Colored outcome when System Exposure is Controlled |
-| If the app is external | Colored outcome when System Exposure is Open |
+| If the app is internal | Colored outcome when System Exposure is Controlled. Header links to the [CERT 72-row table](https://github.com/CERTCC/SSVC/blob/bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1/data/csv/ssvc/deployer_patch_application_priority_1_0_0.csv) |
+| If the app is external | Colored outcome when System Exposure is Open. Header links to the same CERT table |
 
 The heading is the most urgent of those two outcome columns. When a config declares
 `internal` or `external`, the heading uses that column.

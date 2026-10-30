@@ -207,7 +207,13 @@ class DecisionTests(unittest.TestCase):
         header = next(line for line in section.splitlines() if line.startswith("| CVE |"))
         self.assertLess(header.index("EPSS"), header.index("Exploitation"))
         self.assertNotIn("Exploited?", section)
-        self.assertIn("If the app is internal", section)
+        self.assertIn(
+            "[If the app is internal](https://github.com/CERTCC/SSVC/blob/"
+            "bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1/data/csv/ssvc/"
+            "deployer_patch_application_priority_1_0_0.csv)",
+            section,
+        )
+        self.assertIn("[If the app is external](https://github.com/CERTCC/SSVC/blob/", section)
         self.assertIn("![Scheduled](https://img.shields.io/badge/Scheduled-a16207", section)
         self.assertIn(
             "![Out-of-Cycle](https://img.shields.io/badge/Out--of--Cycle-c2410c",
