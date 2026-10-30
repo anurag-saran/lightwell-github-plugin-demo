@@ -1,11 +1,31 @@
 #!/usr/bin/env python3
-"""Write a shields.io endpoint JSON badge for available Lightwell library updates."""
+"""Write a shields.io endpoint JSON badge for available Lightwell library updates.
+
+The message keeps the update count and, when the scan has one, the same
+application priority the remediation pull request shows.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
+
+import remediation_priority
+
+_COUNT_COLOR = "0E4429"
+
+
+def badge_message(matches: list) -> tuple[str, str]:
+    """Right-hand badge text and color. Priority matches the application row."""
+    count = len(matches)
+    if count == 0:
+        return "0 available", "informational"
+    available = "1 available" if count == 1 else f"{count} available"
+    priority = remediation_priority.application_priority(matches)
+    if not priority:
+        return available, _COUNT_COLOR
+    return f"{priority} · {available}", remediation_priority.priority_color(priority)
 
 
 def main() -> int:
@@ -25,16 +45,7 @@ def main() -> int:
     args = parser.parse_args()
 
     matches = json.loads(args.matches.read_text(encoding="utf-8")).get("matches", [])
-    count = len(matches)
-    if count == 0:
-        message = "0 available"
-        color = "informational"
-    elif count == 1:
-        message = "1 available"
-        color = "0E4429"
-    else:
-        message = f"{count} available"
-        color = "0E4429"
+    message, color = badge_message(matches)
 
     payload = {
         "schemaVersion": 1,

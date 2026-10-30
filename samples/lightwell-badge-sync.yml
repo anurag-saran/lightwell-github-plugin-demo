@@ -50,11 +50,18 @@ jobs:
           set -euo pipefail
           PLUGIN="../_lightwell/lightwell-github"
           BRANCH="lightwell/badge"
+          TARGET_NAME="${GITHUB_REPOSITORY##*/}"
+          RPE_FILE="../_lightwell/targets/${TARGET_NAME}.lightwell-rpe.json"
+          RPE_ARGS=()
+          if [ -f "$RPE_FILE" ]; then
+            RPE_ARGS+=(--rpe-config "$RPE_FILE")
+          fi
 
           python3 "$PLUGIN/scan_poms.py" \
             --root . \
             --catalog "$PLUGIN/catalog.json" \
-            --out-dir /tmp/lightwell-out
+            --out-dir /tmp/lightwell-out \
+            "${RPE_ARGS[@]}"
 
           MATCH_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/lightwell-out/matches.json'))['matches']))")
           echo "Available library updates after scan: $MATCH_COUNT"

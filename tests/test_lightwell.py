@@ -244,6 +244,93 @@ class BadgeTests(unittest.TestCase):
                 payload = json.loads(out.read_text(encoding="utf-8"))
                 self.assertEqual(payload["message"], message)
                 self.assertEqual(payload["color"], color)
+                self.assertEqual(payload["label"], "Lightwell library updates")
+
+    def test_badge_includes_application_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            matches_path = Path(tmp) / "matches.json"
+            out = Path(tmp) / "badge.json"
+            matches_path.write_text(
+                json.dumps(
+                    {
+                        "matches": [
+                            {
+                                "cves": [
+                                    {
+                                        "risk": {
+                                            "outcome_internal": "Scheduled",
+                                            "outcome_external": "Out-of-Cycle",
+                                        }
+                                    },
+                                    {
+                                        "risk": {
+                                            "outcome_internal": "Defer",
+                                            "outcome_external": "Scheduled",
+                                        }
+                                    },
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old = sys.argv
+            try:
+                sys.argv = [
+                    "write_badge.py",
+                    "--matches",
+                    str(matches_path),
+                    "--out",
+                    str(out),
+                ]
+                self.assertEqual(write_badge.main(), 0)
+            finally:
+                sys.argv = old
+            payload = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(payload["message"], "Out-of-Cycle · 1 available")
+            self.assertEqual(payload["color"], "c2410c")
+
+    def test_badge_uses_declared_internal_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            matches_path = Path(tmp) / "matches.json"
+            out = Path(tmp) / "badge.json"
+            matches_path.write_text(
+                json.dumps(
+                    {
+                        "matches": [
+                            {
+                                "cves": [
+                                    {
+                                        "risk": {
+                                            "outcome_internal": "Scheduled",
+                                            "outcome_external": "Out-of-Cycle",
+                                            "exposure_declared": "internal",
+                                        }
+                                    }
+                                ]
+                            },
+                            {"cves": []},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old = sys.argv
+            try:
+                sys.argv = [
+                    "write_badge.py",
+                    "--matches",
+                    str(matches_path),
+                    "--out",
+                    str(out),
+                ]
+                self.assertEqual(write_badge.main(), 0)
+            finally:
+                sys.argv = old
+            payload = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(payload["message"], "Scheduled · 2 available")
+            self.assertEqual(payload["color"], "a16207")
 
 
 class ReportTests(unittest.TestCase):

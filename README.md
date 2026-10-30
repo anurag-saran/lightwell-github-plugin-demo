@@ -25,7 +25,7 @@ The app repos are normal Maven apps — **no** Lightwell plugin code required th
 
 Each app should include [`.github/workflows/lightwell-badge-sync.yml`](samples/lightwell-badge-sync.yml)
 (checks out this plugin for scan/badge helpers). After a remediation PR merges — or any
-`pom.xml` change on `main` — that workflow re-scans and republishes the shields count.
+`pom.xml` change on `main` — that workflow re-scans and republishes the shields count and the application's remediation priority.
 
 ## Contents
 
@@ -47,7 +47,7 @@ Each app should include [`.github/workflows/lightwell-badge-sync.yml`](samples/l
 | What | Where |
 |------|--------|
 | Remediation PR | Branch `lightwell/remediations` on the **target** app (`--force-with-lease`) |
-| Available-updates badge | Branch `lightwell/badge` on the **target** app (never commits to `main`) |
+| Available-updates badge | Branch `lightwell/badge` on the **target** app (never commits to `main`). The message is the update count, plus the same application priority the remediation PR shows. |
 | After pom merge | Target app workflow **Lightwell badge sync** (on `pom.xml` change) refreshes the count |
 | Schedule | Weekly Monday 09:00 UTC — **all four** payment apps |
 | Manual | Actions → Lightwell Remediate → pick one of the four targets |
@@ -84,7 +84,7 @@ cp samples/lightwell-badge-sync.yml /path/to/app/.github/workflows/
 | `remediation_priority.py` | Remediation Priority Engine: look up outcomes in CERT/CC's vendored SSVC table |
 | `osv_cves.py` | Fetch/load Lightwell OSV advisories; CVSS 3.1 base score; attach to matches |
 | `apply_bumps.py` | Apply version bumps from matches |
-| `write_badge.py` | Write shields.io endpoint JSON |
+| `write_badge.py` | Write shields.io endpoint JSON (update count and application priority) |
 | `sync_catalog.py` | Crawl Lightwell Maven indexes → `catalog.json` (`--check` / `--dry-run`) |
 
 ## Local dry-run (against a local clone of the app)

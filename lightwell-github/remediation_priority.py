@@ -941,6 +941,17 @@ def _priority_rollup(
     return _most_urgent(internals), _most_urgent(externals), declared
 
 
+def application_priority(matches: list[dict[str, Any]]) -> str | None:
+    """The priority the report shows for the whole application."""
+    internal, external, declared = _priority_rollup(matches)
+    outcome, _where = _shown_outcome(internal, external, declared)
+    return outcome
+
+
+def priority_color(outcome: str) -> str:
+    return _OUTCOME_COLOR.get(outcome, "6b7280")
+
+
 def _source_phrase(source: str, cve_id: str | None) -> str:
     if source == "cisa-adp" and cve_id:
         return f"source [CISA ADP](https://www.cve.org/CVERecord?id={cve_id})"
