@@ -129,10 +129,11 @@ that file. They are not reimplemented in Python.
 | Exploitation | None, Public PoC, or Active, from [CISA ADP](https://github.com/cisagov/vulnrichment). The value links to that CVE record |
 | Automatable | No or Yes, from the same CISA ADP block. The value links to that CVE record |
 
-App impact, exposure, and priority are one row for the application, above the CVE table.
+App impact and exposure are one row for the application, above the CVE table.
 This report treats the application as external unless `.lightwell-rpe.json` declares
-`internal`. Priority is the most urgent external outcome across the libraries, and its
-header links to the [CERT 72-row table](https://github.com/CERTCC/SSVC/blob/bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1/data/csv/ssvc/deployer_patch_application_priority_1_0_0.csv).
+`internal`. The application Priority is the most urgent outcome across the libraries.
+Each CVE row has its own Priority for that same exposure. Both headers link to the
+[CERT 72-row table](https://github.com/CERTCC/SSVC/blob/bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1/data/csv/ssvc/deployer_patch_application_priority_1_0_0.csv).
 A declared `internal` or `external` is marked `(declared)`. The per-CVE trace still
 includes the other exposure path.
 

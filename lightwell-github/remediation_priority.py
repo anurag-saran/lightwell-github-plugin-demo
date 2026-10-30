@@ -1107,7 +1107,7 @@ def _application_table(
     external: str | None,
     declared: str | None,
 ) -> list[str]:
-    """App impact, exposure, and priority once. They do not vary by CVE row."""
+    """App impact and exposure once. Priority here is the most urgent across libraries."""
     outcome, _where = _shown_outcome(internal, external, declared)
     if declared == "internal":
         exposure = "Internal (declared)"
@@ -1117,7 +1117,8 @@ def _application_table(
         exposure = "External"
     priority = _outcome_label(outcome, declared in ("internal", "external")) if outcome else "—"
     return [
-        "App impact, exposure, and priority apply to the whole application.",
+        "App impact and exposure apply to the whole application. "
+        "Each CVE's Priority uses that exposure.",
         "",
         "| App impact<br>CMDB | Exposure | "
         f"[Priority]({_CERT_TABLE_URL}) |",
@@ -1132,10 +1133,11 @@ def _table_header() -> list[str]:
         "| CVE | Library (current → Lightwell build) | CVSS<br>Lightwell OSV "
         f"| EPSS<br>[FIRST]({_FIRST_EPSS_URL}) "
         f"| Exploitation<br>[CISA ADP]({_CISA_ADP_URL}) "
-        f"| Automatable<br>[CISA ADP]({_CISA_ADP_URL}) |",
+        f"| Automatable<br>[CISA ADP]({_CISA_ADP_URL}) "
+        f"| [Priority]({_CERT_TABLE_URL}) |",
         "|-----|--------------------------------------|----------------------|"
         "------------------------|------------------------------|"
-        "-----------------------------|",
+        "-----------------------------|----------|",
     ]
 
 
@@ -1184,18 +1186,25 @@ def render_section(matches: list[dict[str, Any]]) -> str:
         else:
             cvss_cell = f"[{cvss:g}](https://access.redhat.com/security/cve/{cve_id})"
         link = f"[`{cve_id}`](https://access.redhat.com/security/cve/{cve_id})"
+        row_declared = risk.get("exposure_declared")
+        outcome = (
+            risk["outcome_internal"]
+            if row_declared == "internal"
+            else risk["outcome_external"]
+        )
         lines.append(
-            "| {cve} | {lib} | {cvss} | {epss} | {expl} | {auto} |".format(
+            "| {cve} | {lib} | {cvss} | {epss} | {expl} | {auto} | {priority} |".format(
                 cve=link,
                 lib=_library_cell(match),
                 cvss=cvss_cell,
                 epss=_epss_cell(risk.get("epss"), cve_id),
                 expl=_linked_decision(risk["exploitation"], cve_id),
                 auto=_linked_decision(risk["automatable"], cve_id),
+                priority=_outcome_label(outcome, row_declared in ("internal", "external")),
             )
         )
     for match in empty:
-        lines.append(f"| — | {_library_cell(match)} | — | — | — | — |")
+        lines.append(f"| — | {_library_cell(match)} | — | — | — | — | — |")
     lines.append("")
     lines.extend(_outcome_index())
     for match, cve in rows:
