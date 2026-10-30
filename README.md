@@ -19,7 +19,7 @@ The app repos are normal Maven apps — **no** Lightwell plugin code required th
 | Target app | Role |
 |---|---|
 | [`payments-service`](https://github.com/anurag-saran/payments-service) | Live grade **B** (jackson drop-in) |
-| [`fraud-service`](https://github.com/anurag-saran/fraud-service) | Second dashboard app (logback-classic, commons-fileupload) |
+| [`fraud-service`](https://github.com/anurag-saran/fraud-service) | Second dashboard app (logback-classic, commons-fileupload, woodstox-core) |
 | [`payments-service-notests`](https://github.com/anurag-saran/payments-service-notests) | REACHABILITY_ONLY |
 | [`payments-service-grade-c`](https://github.com/anurag-saran/payments-service-grade-c) | Live grade **C** |
 | [`payments-service-grade-f`](https://github.com/anurag-saran/payments-service-grade-f) | Live grade **F** |
