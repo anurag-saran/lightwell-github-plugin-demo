@@ -924,8 +924,11 @@ def _priority_heading(internal: str | None, external: str | None, declared: str 
     else:
         headline = _most_urgent([item for item in (internal, external) if item])
     if not headline:
-        return ["## SSVC priority", ""]
-    lines = [f"## SSVC priority: {_shield(headline, _OUTCOME_COLOR[headline])}", ""]
+        return ["## Prioritization guidance", ""]
+    lines = [
+        f"## Prioritization guidance: {_shield(headline, _OUTCOME_COLOR[headline])}",
+        "",
+    ]
     if internal and external and internal != external:
         external_note = " (declared)" if declared == "external" else ""
         internal_note = " (declared)" if declared == "internal" else ""

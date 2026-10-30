@@ -484,13 +484,13 @@ def render_pr_body(report: str, match_count: int) -> str:
         f"Opened by plugin: {_PLUGIN_URL}\n\n"
         "Branch `lightwell/remediations` is owned by the Lightwell bot "
         "(pushed with `--force-with-lease`).\n\n"
-        "Bumps below include **CVEs fixed**, **CVSS**, and an SSVC priority "
+        "Bumps below include **CVEs fixed**, **CVSS**, and prioritization guidance "
         "for internal and external exposure.\n\n"
         "**Merge** to accept the update, or **close** to reject it.\n\n"
     )
     test_plan = (
         "\n## Test plan\n\n"
-        "- [ ] Review pom.xml version bumps, the CVE/CVSS table, and the SSVC priority\n"
+        "- [ ] Review pom.xml version bumps, the CVE/CVSS table, and the prioritization guidance\n"
         "- [ ] Run `mvn -q test` (or the project build)\n"
         "- [ ] Confirm Lightwell artifacts resolve in CI\n"
     )

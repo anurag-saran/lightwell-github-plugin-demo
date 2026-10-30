@@ -80,7 +80,7 @@ cp samples/lightwell-badge-sync.yml /path/to/app/.github/workflows/
 
 | Script | Role |
 |--------|------|
-| `scan_poms.py` | Scan POMs → `matches.json`, `report.md`, and `pr-body.md` (OSV CVEs plus SSVC priority) |
+| `scan_poms.py` | Scan POMs → `matches.json`, `report.md`, and `pr-body.md` (OSV CVEs plus prioritization guidance) |
 | `ssvc_risk.py` | Look up CERT/CC SSVC outcomes from the vendored deployer table |
 | `osv_cves.py` | Fetch/load Lightwell OSV advisories; CVSS 3.1 base score; attach to matches |
 | `apply_bumps.py` | Apply version bumps from matches |
@@ -105,12 +105,12 @@ python3 lightwell-github/scan_poms.py --root /path/to/app \
 Skip CVE enrichment entirely: add `--no-osv`.
 
 The remediation PR / `report.md` lists each bump with **CVEs fixed** and **CVSS**
-severity (from Lightwell OSV), then an SSVC priority table. The section heading
+severity (from Lightwell OSV), then a **Prioritization guidance** section. The heading
 shows the highest priority across every library. Matches are ordered by
 external outcome, then internal outcome, then EPSS, then CVSS. A match with no CVEs
 sorts last. `--no-risk` leaves the CVSS ordering from the OSV join.
 
-## SSVC priority
+## Prioritization guidance
 
 The priority table is the CERT/CC deployer decision table
 `deployer_patch_application_priority_1_0_0`, vendored at

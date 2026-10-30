@@ -199,7 +199,7 @@ class DecisionTests(unittest.TestCase):
         self.assertIn("source CMDB", section)
         self.assertNotIn("(demo setting)", section)
         self.assertNotIn("(assumed)", section)
-        self.assertIn("## SSVC priority: ![Out-of-Cycle]", section)
+        self.assertIn("## Prioritization guidance: ![Out-of-Cycle]", section)
         self.assertIn("Highest across these libraries:", section)
         self.assertIn("Exploitation<br>[CISA ADP](https://github.com/cisagov/vulnrichment)", section)
         self.assertIn("App impact<br>CMDB", section)
@@ -255,7 +255,7 @@ class DecisionTests(unittest.TestCase):
         section = ssvc_risk.render_section(
             [_match("json-path", [_cve("CVE-2024-0000", risk, 7.5)])]
         )
-        self.assertIn("## SSVC priority: ![Out-of-Cycle]", section)
+        self.assertIn("## Prioritization guidance: ![Out-of-Cycle]", section)
         self.assertIn("if the app is external (declared)", section)
         self.assertIn("Out-of-Cycle (declared)", section)
         self.assertNotIn("Scheduled (declared)", section)
@@ -359,7 +359,7 @@ class OrderingTests(unittest.TestCase):
             ],
         )
         section = ssvc_risk.render_section(matches)
-        self.assertIn("## SSVC priority: ![Immediate]", section)
+        self.assertIn("## Prioritization guidance: ![Immediate]", section)
         self.assertIn(
             "[Active](https://www.cve.org/CVERecord?id=CVE-IMM)",
             section,
