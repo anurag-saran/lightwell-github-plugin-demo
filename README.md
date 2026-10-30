@@ -80,8 +80,8 @@ cp samples/lightwell-badge-sync.yml /path/to/app/.github/workflows/
 
 | Script | Role |
 |--------|------|
-| `scan_poms.py` | Scan POMs → `matches.json`, `report.md`, and `pr-body.md` (OSV CVEs plus prioritization guidance) |
-| `ssvc_risk.py` | Look up CERT/CC SSVC outcomes from the vendored deployer table |
+| `scan_poms.py` | Scan POMs → `matches.json`, `report.md`, and `pr-body.md` (OSV CVEs plus RPE guidance) |
+| `remediation_priority.py` | Remediation Priority Engine: look up outcomes in CERT/CC's vendored SSVC table |
 | `osv_cves.py` | Fetch/load Lightwell OSV advisories; CVSS 3.1 base score; attach to matches |
 | `apply_bumps.py` | Apply version bumps from matches |
 | `write_badge.py` | Write shields.io endpoint JSON |
@@ -91,7 +91,7 @@ cp samples/lightwell-badge-sync.yml /path/to/app/.github/workflows/
 
 ```bash
 python3 lightwell-github/scan_poms.py --root /path/to/payments-service \
-  --risk-config targets/payments-service.lightwell-risk.json
+  --rpe-config targets/payments-service.lightwell-rpe.json
 cat lightwell-github/out/report.md
 ```
 
@@ -105,14 +105,16 @@ python3 lightwell-github/scan_poms.py --root /path/to/app \
 Skip CVE enrichment entirely: add `--no-osv`.
 
 The remediation PR / `report.md` lists each bump with **CVEs fixed** and **CVSS**
-severity (from Lightwell OSV), then a **Prioritization guidance** section. The heading
-shows the highest priority across every library. Matches are ordered by
+severity (from Lightwell OSV), then a **Remediation Priority Engine (RPE)** section.
+The heading shows the highest priority across every library. Matches are ordered by
 external outcome, then internal outcome, then EPSS, then CVSS. A match with no CVEs
-sorts last. `--no-risk` leaves the CVSS ordering from the OSV join.
+sorts last. `--no-rpe` leaves the CVSS ordering from the OSV join.
 
-## Prioritization guidance
+## Remediation Priority Engine (RPE)
 
-The priority table is the CERT/CC deployer decision table
+The RPE applies CERT/CC's SSVC deployer table; SSVC is the method, the RPE is this implementation.
+
+The policy is CERT/CC's deployer decision table
 `deployer_patch_application_priority_1_0_0`, vendored at
 `lightwell-github/ssvc/deployer_patch_application_priority_1_0_0.csv`
 (commit `bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1`). Outcomes are looked up from
@@ -126,16 +128,13 @@ that file. They are not reimplemented in Python.
 | EPSS | [FIRST](https://www.first.org/epss/) exploit probability. The number links to that CVE. Missing is `n/a`. Tie-break only |
 | Exploitation | None, Public PoC, or Active, from [CISA ADP](https://github.com/cisagov/vulnrichment). The value links to that CVE record |
 | Automatable | No or Yes, from the same CISA ADP block. The value links to that CVE record |
-| App impact | SSVC Human Impact from the CMDB for this application |
-| If the app is internal | Colored outcome when System Exposure is Controlled. Header links to the [CERT 72-row table](https://github.com/CERTCC/SSVC/blob/bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1/data/csv/ssvc/deployer_patch_application_priority_1_0_0.csv) |
-| If the app is external | Colored outcome when System Exposure is Open. Header links to the same CERT table |
 
-The heading is the most urgent of those two outcome columns. When a config declares
-`internal` or `external`, the heading uses that column.
-
-Both exposure columns are always computed. The scan does not ask which one you are.
-A config `exposure` of `internal` or `external` marks that column `(declared)` and
-still fills the other column.
+App impact, exposure, and priority are one row for the application, above the CVE table.
+This report treats the application as external unless `.lightwell-rpe.json` declares
+`internal`. Priority is the most urgent external outcome across the libraries, and its
+header links to the [CERT 72-row table](https://github.com/CERTCC/SSVC/blob/bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1/data/csv/ssvc/deployer_patch_application_priority_1_0_0.csv).
+A declared `internal` or `external` is marked `(declared)`. The per-CVE trace still
+includes the other exposure path.
 
 Under the table, a color key lists the four outcomes: Immediate (red),
 Out-of-Cycle (orange), Scheduled (amber), and Defer (green).
@@ -144,29 +143,34 @@ Out-of-Cycle (orange), Scheduled (amber), and Defer (green).
 
 | Decision point | Source | If missing |
 |----------------|--------|------------|
-| Exploitation | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), else the [CISA ADP](https://github.com/cisagov/vulnrichment) SSVC block on the [CVE record](https://www.cve.org/) | Public PoC, marked † |
+| Exploitation | Red Hat exploit status (CISA KEV, from the [VEX file](https://security.access.redhat.com/data/csaf/v2/vex/)), else the [CISA KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), else the [CISA ADP](https://github.com/cisagov/vulnrichment) SSVC block on the [CVE record](https://www.cve.org/) | Public PoC, marked † |
 | Automatable | CISA ADP SSVC block | Yes, marked † |
-| App impact | CMDB for this application. A demo config supplies the value when the target has no `.lightwell-risk.json` | Medium, marked † |
+| App impact | CMDB for this application. A demo config supplies the value when the target has no `.lightwell-rpe.json` | Medium, marked † |
 | EPSS | `https://api.first.org/data/v1/epss` in batches of at most 100 CVEs | stored as `null`, shown as `n/a` |
 
-A CVE in the KEV catalog is Exploitation = Active. Vulnrichment tokens map as
-`poc` → Public PoC, and `none`, `active`, `yes`, and `no` pass through. Any other
-token counts as missing and uses the fallback. Missing data never lowers urgency.
-A feed outage logs a warning, uses the cache under `lightwell-github/out/feeds/`
-when it exists, and otherwise uses the same fallbacks. `--offline` reads that cache
-and does not call the feeds. `--no-risk` skips the section. The run still produces
+Red Hat exploit status (a VEX threat of category `exploit_status`) is Exploitation
+= Active. That file restates CISA's KEV catalog. If Red Hat has no file, no threats
+array, or its record has not caught up, a CVE in the KEV catalog is still Active.
+Vulnrichment tokens map as `poc` → Public PoC, and `none`, `active`, `yes`, and
+`no` pass through. Any other token counts as missing and uses the fallback. Missing
+data never lowers urgency. A feed outage logs a warning and uses the cache under
+`lightwell-github/out/feeds/` when it exists (`kev.json`, `adp/{CVE}.json`,
+`epss.json`, `redhat/{CVE}.json`). A Red Hat 404 is cached as missing and is not
+an outage. Otherwise the same fallbacks apply. `--offline` reads that cache and
+does not call the feeds. `--no-rpe` skips the section. The run still produces
 `matches.json` and `report.md`.
 
 The report header includes the feed date, the table version, and
-`SSVC data found for X of Y CVEs; Z values had no source record.` Older CVEs often
-have no CISA ADP record, so those values are marked †.
+`Source data found for X of Y CVEs; Z values had no source record.` Older CVEs often
+have no CISA ADP record, so those values are marked †. The next line counts Active
+signals: `Exploit status: Red Hat for X of Y CVEs, CISA KEV fallback for Z.`
 
 Under the table, each CVE has a `How this was computed` trace: every input with its
 value, source, and fetch date, then both decision paths.
 
 ### Config
 
-The target repo can carry `.lightwell-risk.json`:
+The target repo can carry `.lightwell-rpe.json`:
 
 ```json
 {
@@ -186,13 +190,24 @@ The target repo can carry `.lightwell-risk.json`:
 fetched value and are labeled customer-provided, with the note in the trace. An
 invalid field is ignored and a warning is printed. The other fields still apply.
 
-`--risk-config <path>` is used only when the target has no `.lightwell-risk.json`.
+`--rpe-config <path>` is used only when the target has no `.lightwell-rpe.json`.
 Demo configs for apps we do not edit live in `targets/`.
-`targets/payments-service.lightwell-risk.json` sets Human Impact to High. The
+`targets/payments-service.lightwell-rpe.json` sets Human Impact to High. The
 report shows that as `High*` and explains that it was selected for the demo, not
 read from a CMDB. With every other input at its default
 (Public PoC, Yes, Medium) both exposure columns are Scheduled, so the demo config
 is what makes the two columns differ.
+
+### Renamed
+
+These older names still work:
+
+| Old | Current |
+|-----|---------|
+| `--no-risk` | `--no-rpe` (the old flag is hidden) |
+| `--risk-config` | `--rpe-config` (the old flag is hidden) |
+| `.lightwell-risk.json` in a target repo | `.lightwell-rpe.json`. A repo with only the old file still loads, and the scan warns to rename it. If both files exist, `.lightwell-rpe.json` is used and the old file is ignored. |
+| `targets/<app>.lightwell-risk.json` | `targets/<app>.lightwell-rpe.json` |
 
 `scan_poms.py` also writes `pr-body.md`. If that body would pass 65,536 characters,
 the computation traces are dropped and the body links to `report.md`. The remediate

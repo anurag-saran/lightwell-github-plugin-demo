@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SSVC deployer priority for Lightwell matches.
+"""Remediation Priority Engine (RPE): applies CERT/CC's SSVC deployer table to Lightwell matches.
 
 The decision table is the vendored CERT/CC CSV. This module does not encode
 outcomes itself. It only gathers Exploitation, Automatable, Human Impact, and
@@ -34,6 +34,9 @@ EXPECTED_SHA256 = "68491dc72505bf0703f32d8a278fc59cdaee4f515922633312bf4cc67f1b1
 EXPECTED_ROWS = 72
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+# access.redhat.com redirects here. The year is the year in the CVE ID.
+RH_VEX_URL = "https://security.access.redhat.com/data/csaf/v2/vex/{year}/{name}.json"
+RH_CVE_PAGE = "https://access.redhat.com/security/cve/{cve_id_lower}"
 CVE_URL = "https://cveawg.mitre.org/api/cve/{cve_id}"
 EPSS_URL = "https://api.first.org/data/v1/epss?cve="
 EPSS_BATCH = 100
@@ -313,10 +316,19 @@ def load_risk_config(path: Path | None, *, demo: bool) -> dict[str, Any]:
 
 
 def resolve_config(root: Path, risk_config: Path | None) -> dict[str, Any]:
-    """Prefer the target's own file. ``--risk-config`` is the demo fallback."""
-    target = root / ".lightwell-risk.json"
-    if target.is_file():
-        return load_risk_config(target, demo=False)
+    """Prefer ``.lightwell-rpe.json``. ``--rpe-config`` is the demo fallback.
+
+    ``.lightwell-risk.json`` still loads, with a warning, when the new file is absent.
+    """
+    current = root / ".lightwell-rpe.json"
+    legacy = root / ".lightwell-risk.json"
+    if current.is_file():
+        if legacy.is_file():
+            warn("ignoring legacy .lightwell-risk.json; using .lightwell-rpe.json")
+        return load_risk_config(current, demo=False)
+    if legacy.is_file():
+        warn("using legacy .lightwell-risk.json; rename it to .lightwell-rpe.json")
+        return load_risk_config(legacy, demo=False)
     if risk_config is not None:
         return load_risk_config(risk_config, demo=True)
     return load_risk_config(None, demo=False)
@@ -353,6 +365,51 @@ def _conservative(token: str | None, default: str) -> str:
     return token or "immediate"
 
 
+def rh_vex_url(cve_id: str) -> str | None:
+    parts = cve_id.split("-")
+    if len(parts) < 3 or not parts[1].isdigit() or len(parts[1]) != 4:
+        return None
+    return RH_VEX_URL.format(year=parts[1], name=cve_id.lower())
+
+
+def rh_cve_page(cve_id: str) -> str:
+    return RH_CVE_PAGE.format(cve_id_lower=cve_id.lower())
+
+
+def parse_redhat_vex(doc: dict[str, Any], cve_id: str) -> dict[str, Any] | None:
+    """Red Hat exploit status for one CVE.
+
+    ``exploited`` when that CVE has a threat of category ``exploit_status``.
+    ``not_listed`` when it has a threats array and no such entry.
+    ``None`` when Red Hat published no answer: the CVE is absent, or there is
+    no threats array. A missing threats array does not mean "not exploited".
+    """
+    vulns = doc.get("vulnerabilities")
+    if not isinstance(vulns, list):
+        return None
+    match = next(
+        (
+            vuln
+            for vuln in vulns
+            if isinstance(vuln, dict) and vuln.get("cve") == cve_id
+        ),
+        None,
+    )
+    if match is None:
+        return None
+    threats = match.get("threats")
+    if not isinstance(threats, list):
+        return None
+    for threat in threats:
+        if isinstance(threat, dict) and threat.get("category") == "exploit_status":
+            return {
+                "status": "exploited",
+                "date": threat.get("date"),
+                "details": threat.get("details"),
+            }
+    return {"status": "not_listed"}
+
+
 def build_cve_risk(
     cve_id: str,
     *,
@@ -362,20 +419,40 @@ def build_cve_risk(
     epss_fetched_at: str | None,
     config: dict[str, Any],
     fetched_at: str | None,
+    redhat: dict[str, Any] | None = None,
     table: dict[tuple[str, str, str, str], str] | None = None,
 ) -> dict[str, Any]:
     rows = table if table is not None else load_table()
     override = (config.get("overrides") or {}).get(cve_id) or {}
     note = override.get("note")
     adp = adp or {}
+    redhat = redhat or {}
 
     adp_fetched = adp.get("fetched_at") or fetched_at
     if override.get("exploitation"):
         expl_token = override["exploitation"]
         exploitation = _point(expl_token, "customer-provided", None, False, note)
+    elif redhat.get("status") == "exploited":
+        expl_token = "active"
+        listed = redhat.get("date")
+        rh_note = "CISA KEV via Red Hat"
+        if listed:
+            rh_note = f"{rh_note}, listed {listed}"
+        exploitation = _point(
+            expl_token,
+            "redhat-vex",
+            redhat.get("fetched_at") or fetched_at,
+            False,
+            rh_note,
+        )
     elif in_kev:
         expl_token = "active"
-        exploitation = _point(expl_token, "cisa-kev", fetched_at, False)
+        lag = (
+            "Red Hat record not yet updated"
+            if redhat.get("status") == "not_listed"
+            else None
+        )
+        exploitation = _point(expl_token, "cisa-kev", fetched_at, False, lag)
     else:
         mapped = map_exploitation(adp.get("exploitation"))
         if mapped:
@@ -490,6 +567,25 @@ def coverage_counts(matches: list[dict[str, Any]]) -> tuple[int, int, int]:
     return found, total, assumed
 
 
+def exploit_status_counts(matches: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """Return (Red Hat Active, CVE count, CISA KEV fallback)."""
+    redhat = 0
+    total = 0
+    kev = 0
+    for match in matches:
+        for cve in match.get("cves") or []:
+            risk = cve.get("risk")
+            if not risk:
+                continue
+            total += 1
+            source = (risk.get("exploitation") or {}).get("source")
+            if source == "redhat-vex":
+                redhat += 1
+            elif source == "cisa-kev":
+                kev += 1
+    return redhat, total, kev
+
+
 def _day(value: str | None) -> str | None:
     if not value:
         return None
@@ -519,6 +615,41 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _fetch_redhat(
+    cve_ids: list[str], cache_dir: Path, offline: bool, now: str
+) -> dict[str, dict[str, Any] | None]:
+    """One parsed VEX result per CVE. Never raises. None means Red Hat had no answer."""
+    found: dict[str, dict[str, Any] | None] = {}
+    for cve_id in cve_ids:
+        path = cache_dir / "redhat" / f"{cve_id}.json"
+        url = rh_vex_url(cve_id)
+        if not offline and url:
+            try:
+                parsed = parse_redhat_vex(_http_json(url), cve_id)
+                payload: dict[str, Any] = {"fetched_at": now}
+                if parsed:
+                    payload.update(parsed)
+                _write_json(path, payload)
+                found[cve_id] = payload if parsed else None
+                continue
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    _write_json(path, {"fetched_at": now, "missing": True})
+                    found[cve_id] = None
+                    continue
+                warn(f"{cve_id}: Red Hat VEX fetch failed ({exc}); using the cache if present")
+            except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+                warn(f"{cve_id}: Red Hat VEX fetch failed ({exc}); using the cache if present")
+        cached = _read_json(path)
+        if cached and cached.get("status") in ("exploited", "not_listed"):
+            found[cve_id] = cached
+        else:
+            if cached is None:
+                warn(f"{cve_id}: no cached Red Hat VEX record")
+            found[cve_id] = None
+    return found
 
 
 def _fetch_kev(cache_dir: Path, offline: bool, now: str) -> tuple[set[str], str | None]:
@@ -630,6 +761,7 @@ def _apply_records(
     kev: set[str],
     adp_by_cve: dict[str, dict[str, Any]],
     epss_by_cve: dict[str, float | None],
+    redhat_by_cve: dict[str, dict[str, Any] | None],
     fetched_at: str | None,
     epss_fetched_at: str | None,
     as_of: str,
@@ -649,6 +781,7 @@ def _apply_records(
                 epss_fetched_at=epss_fetched_at,
                 config=config,
                 fetched_at=fetched_at,
+                redhat=redhat_by_cve.get(cve_id),
                 table=table,
             )
     sort_matches(matches)
@@ -664,7 +797,7 @@ def apply_risk(
     risk_config: Path | None = None,
     now: str | None = None,
 ) -> None:
-    """Attach SSVC outcomes. Network and parse errors fall back; they do not raise."""
+    """Attach RPE outcomes. Network and parse errors fall back; they do not raise."""
     try:
         _apply_risk(
             matches,
@@ -675,7 +808,7 @@ def apply_risk(
             now=now,
         )
     except Exception as exc:
-        warn(f"SSVC enrichment failed ({exc}); using conservative defaults")
+        warn(f"RPE enrichment failed ({exc}); using conservative defaults")
         try:
             config = resolve_config(root, risk_config)
             for message in config.get("warnings") or []:
@@ -687,12 +820,13 @@ def apply_risk(
                 kev=set(),
                 adp_by_cve={},
                 epss_by_cve={},
+                redhat_by_cve={},
                 fetched_at=None,
                 epss_fetched_at=None,
                 as_of=as_of,
             )
         except Exception as exc2:
-            warn(f"SSVC enrichment skipped ({exc2})")
+            warn(f"RPE enrichment skipped ({exc2})")
 
 
 def _apply_risk(
@@ -719,8 +853,14 @@ def _apply_risk(
     cache_dir.mkdir(parents=True, exist_ok=True)
     kev, kev_at = _fetch_kev(cache_dir, offline, stamp)
     adp = _fetch_adp(cve_ids, cache_dir, offline, stamp) if cve_ids else {}
+    redhat = _fetch_redhat(cve_ids, cache_dir, offline, stamp) if cve_ids else {}
     epss, epss_at = _fetch_epss(cve_ids, cache_dir, offline, stamp) if cve_ids else ({}, None)
     dates = [d for d in (_day(kev_at), _day(epss_at), _day(stamp)) if d]
+    for record in redhat.values():
+        if record:
+            day = _day(record.get("fetched_at"))
+            if day:
+                dates.append(day)
     for record in adp.values():
         day = _day(record.get("fetched_at"))
         if day:
@@ -732,6 +872,7 @@ def _apply_risk(
         kev=kev,
         adp_by_cve=adp,
         epss_by_cve=epss,
+        redhat_by_cve=redhat,
         fetched_at=_day(kev_at) or _day(stamp),
         epss_fetched_at=_day(epss_at),
         as_of=as_of,
@@ -758,6 +899,8 @@ def _linked_decision(point: dict[str, Any], cve_id: str | None) -> str:
     """Value text. A CISA value links to the record it was read from."""
     label = _decision_label(point)
     source = point.get("source")
+    if source == "redhat-vex" and cve_id:
+        return f"[{label}]({rh_cve_page(cve_id)})"
     if source == "cisa-adp" and cve_id:
         return f"[{label}](https://www.cve.org/CVERecord?id={cve_id})"
     if source == "cisa-kev":
@@ -801,6 +944,8 @@ def _priority_rollup(
 def _source_phrase(source: str, cve_id: str | None) -> str:
     if source == "cisa-adp" and cve_id:
         return f"source [CISA ADP](https://www.cve.org/CVERecord?id={cve_id})"
+    if source == "redhat-vex" and cve_id:
+        return f"source [Red Hat]({rh_cve_page(cve_id)})"
     if source == "cisa-kev":
         return (
             "source [CISA KEV]"
@@ -855,7 +1000,7 @@ def _outcome_label(outcome: str, declared: bool) -> str:
 
 def _outcome_index() -> list[str]:
     lines = [
-        "Outcome key for **If the app is internal** and **If the app is external**:",
+        "Outcome key for **Priority**:",
         "",
         "| | Value | Meaning |",
         "|---|-------|---------|",
@@ -869,15 +1014,16 @@ def _outcome_index() -> list[str]:
             "",
             "| Column | Source |",
             "|--------|--------|",
-            "| Exploitation | [CISA ADP](https://github.com/cisagov/vulnrichment) "
-            "SSVC block on the [CVE record](https://www.cve.org/). "
-            "A CVE in the [CISA KEV catalog]"
-            "(https://www.cisa.gov/known-exploited-vulnerabilities-catalog) is Active. |",
+            "| Exploitation | Red Hat exploit status "
+            "(CISA KEV, from Red Hat's VEX file), else the "
+            f"[CISA KEV catalog]({_KEV_URL}), else the "
+            "[CISA ADP](https://github.com/cisagov/vulnrichment) "
+            "SSVC block on the [CVE record](https://www.cve.org/). |",
             "| Automatable | The same CISA ADP SSVC block. Yes or No. |",
             "| App impact | CMDB record for this application: how much harm an exploit "
             "would cause here. Low, Medium, High, or Very High. |",
             "| EPSS | [FIRST EPSS](https://www.first.org/epss/): chance of exploitation "
-            "activity in the next 30 days. Used only to order ties, not as an SSVC input. |",
+            "activity in the next 30 days. Used only to order ties, not as an RPE table input. |",
             "| CVSS | Base score from the Lightwell OSV advisory. "
             "The number links to the Red Hat CVE page. |",
             "",
@@ -910,41 +1056,75 @@ def _input_line(label: str, point: dict[str, Any], shown: str, cve_id: str | Non
     if point.get("source") == "config" and shown.endswith("*"):
         parts.append("selected for this demo")
     note = point.get("note")
-    if note and point.get("source") == "customer-provided":
+    if note:
         parts.append(note)
     return "- " + " · ".join(parts)
 
 
-def _priority_heading(internal: str | None, external: str | None, declared: str | None) -> list[str]:
-    """Section title plus the worst outcome across every library."""
+def _shown_outcome(
+    internal: str | None, external: str | None, declared: str | None
+) -> tuple[str | None, str]:
+    """The one priority this report shows, and the exposure sentence."""
     if declared == "internal":
-        headline = internal
-    elif declared == "external":
-        headline = external
-    else:
-        headline = _most_urgent([item for item in (internal, external) if item])
+        return internal, "This application is declared internal."
+    if declared == "external":
+        return external, "This application is declared external."
+    return external, "This application is external."
+
+
+def _priority_heading(internal: str | None, external: str | None, declared: str | None) -> list[str]:
+    """Section title plus the priority for this application."""
+    headline, where = _shown_outcome(internal, external, declared)
     if not headline:
-        return ["## Prioritization guidance", ""]
-    lines = [
-        f"## Prioritization guidance: {_shield(headline, _OUTCOME_COLOR[headline])}",
+        return ["## Remediation Priority Engine (RPE)", ""]
+    return [
+        f"## Remediation Priority Engine (RPE): {_shield(headline, _OUTCOME_COLOR[headline])}",
+        "",
+        f"{where} Priority across these libraries is "
+        f"{_shield(headline, _OUTCOME_COLOR[headline])}.",
         "",
     ]
-    if internal and external and internal != external:
-        external_note = " (declared)" if declared == "external" else ""
-        internal_note = " (declared)" if declared == "internal" else ""
-        lines.append(
-            "Highest across these libraries: "
-            f"{_shield(external, _OUTCOME_COLOR[external])} if the app is external{external_note}, "
-            f"{_shield(internal, _OUTCOME_COLOR[internal])} if the app is internal{internal_note}."
-        )
-    elif internal and external:
-        lines.append(
-            "Highest across these libraries is "
-            f"{_shield(internal, _OUTCOME_COLOR[internal])}, "
-            "for an internal or an external deployment."
-        )
-    lines.append("")
-    return lines
+
+
+def _app_impact_labels(matches: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for match in matches:
+        for cve in match.get("cves") or []:
+            risk = cve.get("risk")
+            if not risk:
+                continue
+            label = _impact_label(risk["human_impact"], bool(risk.get("demo_setting")))
+            if label and label not in seen:
+                seen.add(label)
+                labels.append(label)
+    return ", ".join(labels) if labels else "—"
+
+
+def _application_table(
+    matches: list[dict[str, Any]],
+    internal: str | None,
+    external: str | None,
+    declared: str | None,
+) -> list[str]:
+    """App impact, exposure, and priority once. They do not vary by CVE row."""
+    outcome, _where = _shown_outcome(internal, external, declared)
+    if declared == "internal":
+        exposure = "Internal (declared)"
+    elif declared == "external":
+        exposure = "External (declared)"
+    else:
+        exposure = "External"
+    priority = _outcome_label(outcome, declared in ("internal", "external")) if outcome else "—"
+    return [
+        "App impact, exposure, and priority apply to the whole application.",
+        "",
+        "| App impact<br>CMDB | Exposure | "
+        f"[Priority]({_CERT_TABLE_URL}) |",
+        "|------------|----------|----------|",
+        f"| {_app_impact_labels(matches)} | {exposure} | {priority} |",
+        "",
+    ]
 
 
 def _table_header() -> list[str]:
@@ -952,34 +1132,37 @@ def _table_header() -> list[str]:
         "| CVE | Library (current → Lightwell build) | CVSS<br>Lightwell OSV "
         f"| EPSS<br>[FIRST]({_FIRST_EPSS_URL}) "
         f"| Exploitation<br>[CISA ADP]({_CISA_ADP_URL}) "
-        f"| Automatable<br>[CISA ADP]({_CISA_ADP_URL}) "
-        "| App impact<br>CMDB "
-        f"| [If the app is internal]({_CERT_TABLE_URL}) "
-        f"| [If the app is external]({_CERT_TABLE_URL}) |",
+        f"| Automatable<br>[CISA ADP]({_CISA_ADP_URL}) |",
         "|-----|--------------------------------------|----------------------|"
         "------------------------|------------------------------|"
-        "-----------------------------|--------------|------------------------|"
-        "------------------------|",
+        "-----------------------------|",
     ]
 
 
 def render_section(matches: list[dict[str, Any]]) -> str:
-    """Markdown SSVC section, or an empty string when enrichment did not run."""
+    """Markdown RPE section, or an empty string when enrichment did not run."""
     if not any(m.get("_risk_meta") for m in matches):
         return ""
     meta = next(m["_risk_meta"] for m in matches if m.get("_risk_meta"))
     found, total, assumed = coverage_counts(matches)
+    rh_count, rh_total, kev_count = exploit_status_counts(matches)
     internal, external, declared = _priority_rollup(matches)
     lines = [
         *_priority_heading(internal, external, declared),
-        "SSVC (Stakeholder-Specific Vulnerability Categorization) chooses how fast "
-        "to patch: Immediate, Out-of-Cycle, Scheduled, or Defer. It uses Exploitation, "
-        "Automatable, this application's impact, and whether the system is internal or external.",
+        "The Remediation Priority Engine (RPE) chooses how fast to patch: Immediate, "
+        "Out-of-Cycle, Scheduled, or Defer. It applies CERT/CC's SSVC decision table "
+        "to four answers: Exploitation, Automatable, this application's impact, and "
+        "whether the app is internal or internet-facing.",
         "",
-        f"Risk data as of {meta.get('as_of')} · SSVC table {meta.get('table')}",
+        f"Data as of {meta.get('as_of')} · Policy: CERT/CC SSVC table {meta.get('table')}",
         "",
-        f"SSVC data found for {found} of {total} CVEs; {assumed} values had no source record.",
+        f"Source data found for {found} of {total} CVEs; {assumed} values had no source record.",
+        (
+            f"Exploit status: Red Hat for {rh_count} of {rh_total} CVEs, "
+            f"CISA KEV fallback for {kev_count}."
+        ),
         "",
+        *_application_table(matches, internal, external, declared),
         *_table_header(),
     ]
     rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -994,7 +1177,6 @@ def render_section(matches: list[dict[str, Any]]) -> str:
     rows.sort(key=lambda item: (*_rank_key(item[1]), item[1].get("id") or ""))
     for match, cve in rows:
         risk = cve["risk"]
-        declared = risk.get("exposure_declared")
         cve_id = cve.get("id")
         cvss = cve.get("cvss")
         if cvss is None:
@@ -1003,26 +1185,17 @@ def render_section(matches: list[dict[str, Any]]) -> str:
             cvss_cell = f"[{cvss:g}](https://access.redhat.com/security/cve/{cve_id})"
         link = f"[`{cve_id}`](https://access.redhat.com/security/cve/{cve_id})"
         lines.append(
-            "| {cve} | {lib} | {cvss} | {epss} | {expl} | {auto} | {impact} | {internal} | {external} |".format(
+            "| {cve} | {lib} | {cvss} | {epss} | {expl} | {auto} |".format(
                 cve=link,
                 lib=_library_cell(match),
                 cvss=cvss_cell,
                 epss=_epss_cell(risk.get("epss"), cve_id),
                 expl=_linked_decision(risk["exploitation"], cve_id),
                 auto=_linked_decision(risk["automatable"], cve_id),
-                impact=_impact_label(risk["human_impact"], bool(risk.get("demo_setting"))),
-                internal=_outcome_label(
-                    risk["outcome_internal"], declared == "internal"
-                ),
-                external=_outcome_label(
-                    risk["outcome_external"], declared == "external"
-                ),
             )
         )
     for match in empty:
-        lines.append(
-            f"| — | {_library_cell(match)} | — | — | — | — | — | — | — |"
-        )
+        lines.append(f"| — | {_library_cell(match)} | — | — | — | — |")
     lines.append("")
     lines.extend(_outcome_index())
     for match, cve in rows:
@@ -1056,16 +1229,20 @@ def render_section(matches: list[dict[str, Any]]) -> str:
             )
         )
         declared = risk.get("exposure_declared")
-        if declared:
+        if declared == "internal":
             lines.append(
-                f"- System exposure: {declared} (declared). "
-                "Both columns are still computed "
-                "(internal = Controlled, external = Open)."
+                "- Exposure: internal (declared), so priority uses Controlled. "
+                "The external path (Open) is below."
+            )
+        elif declared == "external":
+            lines.append(
+                "- Exposure: external (declared), so priority uses Open. "
+                "The internal path (Controlled) is below."
             )
         else:
             lines.append(
-                "- System exposure: internal = Controlled, external = Open. "
-                "Both columns are always computed."
+                "- Exposure: external, so priority uses Open. "
+                "The internal path (Controlled) is below."
             )
         if risk.get("epss") is None:
             lines.append("- EPSS: n/a")

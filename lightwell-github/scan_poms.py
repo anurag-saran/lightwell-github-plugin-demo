@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import osv_cves
-import ssvc_risk
+import remediation_priority
 
 REQUIRED_REMEDIATION_KEYS = {
     "groupId",
@@ -379,7 +379,7 @@ def render_report(matches: list[dict[str, Any]]) -> str:
             f"{_cve_cell(m)} |"
         )
 
-    risk_section = ssvc_risk.render_section(matches)
+    risk_section = remediation_priority.render_section(matches)
     if risk_section:
         lines.extend(["", risk_section])
 
@@ -484,13 +484,13 @@ def render_pr_body(report: str, match_count: int) -> str:
         f"Opened by plugin: {_PLUGIN_URL}\n\n"
         "Branch `lightwell/remediations` is owned by the Lightwell bot "
         "(pushed with `--force-with-lease`).\n\n"
-        "Bumps below include **CVEs fixed**, **CVSS**, and prioritization guidance "
+        "Bumps below include **CVEs fixed**, **CVSS**, and Remediation Priority Engine (RPE) guidance "
         "for internal and external exposure.\n\n"
         "**Merge** to accept the update, or **close** to reject it.\n\n"
     )
     test_plan = (
         "\n## Test plan\n\n"
-        "- [ ] Review pom.xml version bumps, the CVE/CVSS table, and the prioritization guidance\n"
+        "- [ ] Review pom.xml version bumps, the CVE/CVSS table, and the RPE guidance\n"
         "- [ ] Run `mvn -q test` (or the project build)\n"
         "- [ ] Confirm Lightwell artifacts resolve in CI\n"
     )
@@ -515,7 +515,7 @@ def _public_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{k: v for k, v in match.items() if not str(k).startswith("_")} for match in matches]
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--root",
@@ -560,22 +560,42 @@ def main() -> int:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="Do not fetch OSV or risk feeds (use --osv-dir and the feed cache)",
+        help="Do not fetch OSV or RPE feeds (use --osv-dir and the feed cache)",
+    )
+    parser.add_argument(
+        "--no-rpe",
+        dest="no_risk",
+        action="store_true",
+        help="Skip the Remediation Priority Engine (RPE) section",
     )
     parser.add_argument(
         "--no-risk",
+        dest="no_risk",
         action="store_true",
-        help="Skip SSVC and EPSS enrichment",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
-        "--risk-config",
+        "--rpe-config",
+        dest="risk_config",
         type=Path,
         default=None,
         help=(
-            "Risk config used when the target repo has no .lightwell-risk.json "
+            "RPE config used when the target repo has no .lightwell-rpe.json "
             "(demo configs live in targets/)"
         ),
     )
+    parser.add_argument(
+        "--risk-config",
+        dest="risk_config",
+        type=Path,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -644,10 +664,10 @@ def main() -> int:
 
     if not args.no_risk:
         risk_config = args.risk_config.resolve() if args.risk_config else None
-        ssvc_risk.apply_risk(
+        remediation_priority.apply_risk(
             matches,
             root=root,
-            cache_dir=ssvc_risk.DEFAULT_FEED_CACHE,
+            cache_dir=remediation_priority.DEFAULT_FEED_CACHE,
             offline=args.offline,
             risk_config=risk_config,
         )

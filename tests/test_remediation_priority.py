@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SSVC table pin, token mapping, fallbacks, and report rendering."""
+"""RPE: CERT/CC SSVC table pin, token mapping, fallbacks, and report rendering."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ import json
 import sys
 import tempfile
 import unittest
+import urllib.error
+from contextlib import redirect_stderr
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,9 +18,10 @@ PLUGIN = ROOT / "lightwell-github"
 sys.path.insert(0, str(PLUGIN))
 
 import scan_poms  # noqa: E402
-import ssvc_risk  # noqa: E402
+import remediation_priority  # noqa: E402
 
-FIX = Path(__file__).parent / "fixtures" / "ssvc"
+FIX = Path(__file__).parent / "fixtures" / "rpe"
+FIX_RH = Path(__file__).parent / "fixtures" / "redhat"
 
 
 def _config(**overrides: object) -> dict:
@@ -40,8 +43,9 @@ def _risk(
     adp: dict | None = None,
     epss: float | None = None,
     config: dict | None = None,
+    redhat: dict | None = None,
 ) -> dict:
-    return ssvc_risk.build_cve_risk(
+    return remediation_priority.build_cve_risk(
         cve_id,
         in_kev=in_kev,
         adp=adp,
@@ -49,6 +53,7 @@ def _risk(
         epss_fetched_at="2026-10-29" if epss is not None else None,
         config=config or _config(),
         fetched_at="2026-10-29",
+        redhat=redhat,
     )
 
 
@@ -64,14 +69,14 @@ def _match(artifact: str, cves: list[dict]) -> dict:
         "toVersion": "1.0.rhlw-00001",
         "pom": "pom.xml",
         "cves": cves,
-        "_risk_meta": {"as_of": "2026-10-29", "table": ssvc_risk.TABLE_VERSION},
+        "_risk_meta": {"as_of": "2026-10-29", "table": remediation_priority.TABLE_VERSION},
     }
 
 
 class TablePinTests(unittest.TestCase):
     def test_sha256_row_count_and_unique_combinations(self) -> None:
-        self.assertEqual(ssvc_risk.table_sha256(), ssvc_risk.EXPECTED_SHA256)
-        text = ssvc_risk.TABLE_PATH.read_text(encoding="utf-8")
+        self.assertEqual(remediation_priority.table_sha256(), remediation_priority.EXPECTED_SHA256)
+        text = remediation_priority.TABLE_PATH.read_text(encoding="utf-8")
         rows = list(csv.reader(io.StringIO(text)))
         self.assertEqual(len(rows[0]), 6)
         self.assertIn(",", rows[0][5])
@@ -93,21 +98,21 @@ class TablePinTests(unittest.TestCase):
             ("active", "open", "yes", "medium"): "out-of-cycle",
         }
         for key, outcome in cases.items():
-            self.assertEqual(ssvc_risk.lookup(*key), outcome, key)
+            self.assertEqual(remediation_priority.lookup(*key), outcome, key)
 
 
 class TokenTests(unittest.TestCase):
     def test_vulnrichment_tokens(self) -> None:
-        self.assertEqual(ssvc_risk.map_exploitation("poc"), "public poc")
-        self.assertEqual(ssvc_risk.map_exploitation("POC"), "public poc")
-        self.assertEqual(ssvc_risk.map_exploitation("none"), "none")
-        self.assertEqual(ssvc_risk.map_exploitation("active"), "active")
-        self.assertEqual(ssvc_risk.map_automatable("yes"), "yes")
-        self.assertEqual(ssvc_risk.map_automatable("no"), "no")
+        self.assertEqual(remediation_priority.map_exploitation("poc"), "public poc")
+        self.assertEqual(remediation_priority.map_exploitation("POC"), "public poc")
+        self.assertEqual(remediation_priority.map_exploitation("none"), "none")
+        self.assertEqual(remediation_priority.map_exploitation("active"), "active")
+        self.assertEqual(remediation_priority.map_automatable("yes"), "yes")
+        self.assertEqual(remediation_priority.map_automatable("no"), "no")
 
     def test_unknown_tokens_are_missing_and_fall_back(self) -> None:
-        self.assertIsNone(ssvc_risk.map_exploitation("weaponized"))
-        self.assertIsNone(ssvc_risk.map_automatable("maybe"))
+        self.assertIsNone(remediation_priority.map_exploitation("weaponized"))
+        self.assertIsNone(remediation_priority.map_automatable("maybe"))
         risk = _risk(adp={"exploitation": "weaponized", "automatable": "maybe"})
         self.assertEqual(risk["exploitation"]["value"], "Public PoC")
         self.assertTrue(risk["exploitation"]["assumed"])
@@ -120,8 +125,8 @@ class TokenTests(unittest.TestCase):
 class DecisionTests(unittest.TestCase):
     def test_kev_fixture_sets_exploitation_active(self) -> None:
         kev = json.loads((FIX / "kev.json").read_text(encoding="utf-8"))
-        self.assertIn("CVE-2021-44228", ssvc_risk.kev_ids_from_doc(kev))
-        adp = ssvc_risk.parse_adp(
+        self.assertIn("CVE-2021-44228", remediation_priority.kev_ids_from_doc(kev))
+        adp = remediation_priority.parse_adp(
             json.loads((FIX / "CVE-2021-44228.json").read_text(encoding="utf-8"))
         )
         self.assertIsNotNone(adp)
@@ -171,18 +176,18 @@ class DecisionTests(unittest.TestCase):
         )
         self.assertEqual(risk["outcome_external"], "Immediate")
         self.assertEqual(
-            ssvc_risk.lookup("active", "open", "yes", "very high"),
+            remediation_priority.lookup("active", "open", "yes", "very high"),
             "immediate",
         )
 
     def test_poc_token_from_live_adp_fixture(self) -> None:
-        adp = ssvc_risk.parse_adp(
+        adp = remediation_priority.parse_adp(
             json.loads((FIX / "CVE-2024-6387.json").read_text(encoding="utf-8"))
         )
         assert adp is not None
-        self.assertEqual(ssvc_risk.map_exploitation(adp["exploitation"]), "public poc")
-        self.assertEqual(ssvc_risk.map_automatable(adp["automatable"]), "no")
-        epss = ssvc_risk.parse_epss(json.loads((FIX / "epss.json").read_text(encoding="utf-8")))
+        self.assertEqual(remediation_priority.map_exploitation(adp["exploitation"]), "public poc")
+        self.assertEqual(remediation_priority.map_automatable(adp["automatable"]), "no")
+        epss = remediation_priority.parse_epss(json.loads((FIX / "epss.json").read_text(encoding="utf-8")))
         self.assertAlmostEqual(epss["CVE-2021-44228"], 0.99999)
         self.assertNotIn("CVE-2099-00000", epss)
 
@@ -193,27 +198,36 @@ class DecisionTests(unittest.TestCase):
         self.assertTrue(risk["demo_setting"])
         self.assertEqual(risk["outcome_internal"], "Scheduled")
         self.assertEqual(risk["outcome_external"], "Out-of-Cycle")
-        section = ssvc_risk.render_section([_match("spring-core", [_cve("CVE-1", risk, 5.0)])])
+        section = remediation_priority.render_section([_match("spring-core", [_cve("CVE-1", risk, 5.0)])])
         self.assertIn("High*", section)
         self.assertIn("selected for this demo", section)
         self.assertIn("source CMDB", section)
         self.assertNotIn("(demo setting)", section)
         self.assertNotIn("(assumed)", section)
-        self.assertIn("## Prioritization guidance: ![Out-of-Cycle]", section)
-        self.assertIn("Highest across these libraries:", section)
+        self.assertTrue(section.startswith("## Remediation Priority Engine (RPE)"))
+        self.assertIn("## Remediation Priority Engine (RPE): ![Out-of-Cycle]", section)
+        for line in section.splitlines():
+            self.assertNotIn("SSVC data found", line)
+            self.assertNotIn("Prioritization guidance", line)
+        self.assertIn("This application is external.", section)
+        self.assertIn("Priority across these libraries is", section)
         self.assertIn("Exploitation<br>[CISA ADP](https://github.com/cisagov/vulnrichment)", section)
         self.assertIn("App impact<br>CMDB", section)
+        self.assertIn("| High* | External |", section)
         self.assertIn("EPSS<br>[FIRST](https://www.first.org/epss/)", section)
         header = next(line for line in section.splitlines() if line.startswith("| CVE |"))
         self.assertLess(header.index("EPSS"), header.index("Exploitation"))
+        self.assertNotIn("App impact", header)
+        self.assertNotIn("If the app is", header)
         self.assertNotIn("Exploited?", section)
         self.assertIn(
-            "[If the app is internal](https://github.com/CERTCC/SSVC/blob/"
+            "[Priority](https://github.com/CERTCC/SSVC/blob/"
             "bf3213bc0bd2bf3cf1329c9b48f72d7163a682b1/data/csv/ssvc/"
             "deployer_patch_application_priority_1_0_0.csv)",
             section,
         )
-        self.assertIn("[If the app is external](https://github.com/CERTCC/SSVC/blob/", section)
+        self.assertNotIn("If the app is internal", section)
+        self.assertNotIn("If the app is external", section)
         self.assertIn("![Scheduled](https://img.shields.io/badge/Scheduled-a16207", section)
         self.assertIn(
             "![Out-of-Cycle](https://img.shields.io/badge/Out--of--Cycle-c2410c",
@@ -223,13 +237,17 @@ class DecisionTests(unittest.TestCase):
         self.assertIn("Where the columns come from:", section)
         self.assertIn("App impact was selected for this demo", section)
         self.assertIn(
-            "SSVC data found for 0 of 1 CVEs; 2 values had no source record.",
+            "Source data found for 0 of 1 CVEs; 2 values had no source record.",
             section,
         )
         self.assertIn("[5](https://access.redhat.com/security/cve/CVE-1)", section)
         self.assertIn("https://github.com/cisagov/vulnrichment", section)
         self.assertIn("https://www.first.org/epss/", section)
-        self.assertIn("Risk data as of 2026-10-29 · SSVC table deployer_patch_application_priority_1_0_0", section)
+        self.assertIn(
+            "Data as of 2026-10-29 · Policy: CERT/CC SSVC table "
+            "deployer_patch_application_priority_1_0_0",
+            section,
+        )
 
     def test_override_and_declared_exposure(self) -> None:
         risk = _risk(
@@ -252,11 +270,16 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(risk["automatable"]["value"], "No")
         self.assertEqual(risk["outcome_internal"], "Scheduled")
         self.assertEqual(risk["outcome_external"], "Out-of-Cycle")
-        section = ssvc_risk.render_section(
+        section = remediation_priority.render_section(
             [_match("json-path", [_cve("CVE-2024-0000", risk, 7.5)])]
         )
-        self.assertIn("## Prioritization guidance: ![Out-of-Cycle]", section)
-        self.assertIn("if the app is external (declared)", section)
+        self.assertTrue(section.startswith("## Remediation Priority Engine (RPE)"))
+        self.assertIn("## Remediation Priority Engine (RPE): ![Out-of-Cycle]", section)
+        for line in section.splitlines():
+            self.assertNotIn("SSVC data found", line)
+            self.assertNotIn("Prioritization guidance", line)
+        self.assertIn("This application is declared external.", section)
+        self.assertIn("| External (declared) |", section)
         self.assertIn("Out-of-Cycle (declared)", section)
         self.assertNotIn("Scheduled (declared)", section)
         self.assertIn("Mythos finding #123", section)
@@ -281,7 +304,7 @@ class DecisionTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            cfg = ssvc_risk.load_risk_config(path, demo=False)
+            cfg = remediation_priority.load_risk_config(path, demo=False)
         self.assertIsNone(cfg["human_impact"])
         self.assertIsNone(cfg["exposure"])
         self.assertNotIn("exploitation", cfg["overrides"]["CVE-1"])
@@ -292,15 +315,69 @@ class DecisionTests(unittest.TestCase):
     def test_target_config_wins_over_risk_config_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".lightwell-risk.json").write_text(
+            (root / ".lightwell-rpe.json").write_text(
                 json.dumps({"human_impact": "Low"}),
                 encoding="utf-8",
             )
             fallback = root / "demo.json"
             fallback.write_text(json.dumps({"human_impact": "High"}), encoding="utf-8")
-            cfg = ssvc_risk.resolve_config(root, fallback)
+            cfg = remediation_priority.resolve_config(root, fallback)
         self.assertEqual(cfg["human_impact"], "low")
         self.assertFalse(cfg["demo"])
+
+    def test_legacy_config_file_loads_and_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".lightwell-risk.json").write_text(
+                json.dumps({"human_impact": "Low"}),
+                encoding="utf-8",
+            )
+            err = io.StringIO()
+            with redirect_stderr(err):
+                cfg = remediation_priority.resolve_config(root, None)
+        self.assertEqual(cfg["human_impact"], "low")
+        self.assertFalse(cfg["demo"])
+        self.assertIn(
+            "using legacy .lightwell-risk.json; rename it to .lightwell-rpe.json",
+            err.getvalue(),
+        )
+
+    def test_new_config_wins_and_legacy_file_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".lightwell-rpe.json").write_text(
+                json.dumps({"human_impact": "High"}),
+                encoding="utf-8",
+            )
+            (root / ".lightwell-risk.json").write_text(
+                json.dumps({"human_impact": "Low"}),
+                encoding="utf-8",
+            )
+            err = io.StringIO()
+            with redirect_stderr(err):
+                cfg = remediation_priority.resolve_config(root, None)
+        self.assertEqual(cfg["human_impact"], "high")
+        self.assertIn(
+            "ignoring legacy .lightwell-risk.json; using .lightwell-rpe.json",
+            err.getvalue(),
+        )
+
+    def test_legacy_cli_flags_are_hidden_aliases(self) -> None:
+        legacy = scan_poms.build_parser().parse_args(
+            ["--no-risk", "--risk-config", "old.json"]
+        )
+        current = scan_poms.build_parser().parse_args(
+            ["--no-rpe", "--rpe-config", "new.json"]
+        )
+        self.assertTrue(legacy.no_risk)
+        self.assertEqual(legacy.risk_config, Path("old.json"))
+        self.assertTrue(current.no_risk)
+        self.assertEqual(current.risk_config, Path("new.json"))
+        help_text = scan_poms.build_parser().format_help()
+        self.assertIn("--no-rpe", help_text)
+        self.assertIn("--rpe-config", help_text)
+        self.assertNotIn("--no-risk", help_text)
+        self.assertNotIn("--risk-config", help_text)
 
 
 class OrderingTests(unittest.TestCase):
@@ -346,7 +423,7 @@ class OrderingTests(unittest.TestCase):
             _match("high-epss", [higher_epss]),
             _match("cycle", [out_of_cycle]),
         ]
-        ssvc_risk.sort_matches(matches)
+        remediation_priority.sort_matches(matches)
         self.assertEqual(
             [m["artifactId"] for m in matches],
             [
@@ -358,8 +435,8 @@ class OrderingTests(unittest.TestCase):
                 "none-yet",
             ],
         )
-        section = ssvc_risk.render_section(matches)
-        self.assertIn("## Prioritization guidance: ![Immediate]", section)
+        section = remediation_priority.render_section(matches)
+        self.assertIn("## Remediation Priority Engine (RPE): ![Immediate]", section)
         self.assertIn(
             "[Active](https://www.cve.org/CVERecord?id=CVE-IMM)",
             section,
@@ -371,7 +448,7 @@ class OrderingTests(unittest.TestCase):
         self.assertLess(section.index("CVE-IMM"), section.index("CVE-OOC"))
         self.assertLess(section.index("CVE-EPSS-HIGH"), section.index("CVE-EPSS-LOW"))
         self.assertLess(section.index("CVE-EPSS-LOW"), section.index("CVE-EPSS-NONE"))
-        self.assertIn("| — | none-yet 1.0 → 1.0.rhlw-00001 | — | — | — | — | — | — | — |", section)
+        self.assertIn("| — | none-yet 1.0 → 1.0.rhlw-00001 | — | — | — | — |", section)
         self.assertLess(section.index("CVE-EPSS-NONE"), section.index("none-yet"))
         none_row = next(line for line in section.splitlines() if line.startswith("| — |"))
         self.assertIn("n/a", section)
@@ -379,13 +456,13 @@ class OrderingTests(unittest.TestCase):
 
     def test_epss_batches_stay_at_most_100(self) -> None:
         ids = [f"CVE-2099-{i:05d}" for i in range(101)]
-        batches = ssvc_risk.epss_batches(ids)
+        batches = remediation_priority.epss_batches(ids)
         self.assertEqual(len(batches), 2)
         self.assertEqual(len(batches[0]), 100)
         self.assertEqual(len(batches[1]), 1)
         self.assertTrue(all(len(batch) <= 100 for batch in batches))
         with self.assertRaises(ValueError):
-            ssvc_risk.epss_batches(ids, size=101)
+            remediation_priority.epss_batches(ids, size=101)
 
     def test_offline_reads_the_cache_and_does_not_fetch(self) -> None:
         calls: list[str] = []
@@ -394,8 +471,8 @@ class OrderingTests(unittest.TestCase):
             calls.append(url)
             raise AssertionError(url)
 
-        original = ssvc_risk._http_json
-        ssvc_risk._http_json = boom
+        original = remediation_priority._http_json
+        remediation_priority._http_json = boom
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -433,7 +510,7 @@ class OrderingTests(unittest.TestCase):
                         ],
                     )
                 ]
-                ssvc_risk.apply_risk(
+                remediation_priority.apply_risk(
                     matches,
                     root=root,
                     cache_dir=cache,
@@ -441,7 +518,7 @@ class OrderingTests(unittest.TestCase):
                     now="2026-10-29",
                 )
         finally:
-            ssvc_risk._http_json = original
+            remediation_priority._http_json = original
         self.assertEqual(calls, [])
         known = matches[0]["cves"][0]["risk"]
         missing = matches[0]["cves"][1]["risk"]
@@ -452,7 +529,205 @@ class OrderingTests(unittest.TestCase):
         self.assertEqual(missing["exploitation"]["value"], "Public PoC")
         self.assertTrue(missing["exploitation"]["assumed"])
         self.assertIsNone(missing["epss"])
-        self.assertEqual(ssvc_risk.format_epss(missing["epss"]), "n/a")
+        self.assertEqual(remediation_priority.format_epss(missing["epss"]), "n/a")
+
+
+class RedHatTests(unittest.TestCase):
+    def test_exploited_vex_is_active_from_redhat(self) -> None:
+        doc = json.loads((FIX_RH / "cve-2021-44228.json").read_text(encoding="utf-8"))
+        parsed = remediation_priority.parse_redhat_vex(doc, "CVE-2021-44228")
+        assert parsed is not None
+        self.assertEqual(parsed["status"], "exploited")
+        self.assertEqual(parsed["date"], "2021-12-10T00:00:00+00:00")
+        self.assertIn("known-exploited-vulnerabilities-catalog", parsed["details"])
+        risk = _risk(
+            "CVE-2021-44228",
+            in_kev=True,
+            adp={"exploitation": "poc", "automatable": "yes", "fetched_at": "2026-10-29"},
+            redhat={**parsed, "fetched_at": "2026-10-30"},
+        )
+        self.assertEqual(risk["exploitation"]["value"], "Active")
+        self.assertEqual(risk["exploitation"]["source"], "redhat-vex")
+        self.assertEqual(risk["exploitation"]["fetched_at"], "2026-10-30")
+        self.assertIn("CISA KEV via Red Hat, listed 2021-12-10", risk["exploitation"]["note"])
+        section = remediation_priority.render_section(
+            [_match("log4j", [_cve("CVE-2021-44228", risk, 10.0)])]
+        )
+        self.assertIn(
+            "Exploit status: Red Hat for 1 of 1 CVEs, CISA KEV fallback for 0.",
+            section,
+        )
+        self.assertIn(
+            "source [Red Hat](https://access.redhat.com/security/cve/cve-2021-44228)",
+            section,
+        )
+        self.assertIn("Red Hat exploit status", section)
+        self.assertIn("CISA KEV via Red Hat, listed 2021-12-10T00:00:00+00:00", section)
+
+    def test_not_listed_falls_through_to_adp(self) -> None:
+        # Live CVE-2022-45688 has no VEX file (404). This document is the
+        # not_listed shape: a threats array with no exploit_status entry.
+        doc = {
+            "vulnerabilities": [
+                {
+                    "cve": "CVE-2022-45688",
+                    "threats": [{"category": "impact", "details": "Moderate"}],
+                }
+            ]
+        }
+        parsed = remediation_priority.parse_redhat_vex(doc, "CVE-2022-45688")
+        self.assertEqual(parsed, {"status": "not_listed"})
+        risk = _risk(
+            "CVE-2022-45688",
+            in_kev=False,
+            adp={"exploitation": "poc", "automatable": "yes"},
+            redhat=parsed,
+        )
+        self.assertEqual(risk["exploitation"]["value"], "Public PoC")
+        self.assertEqual(risk["exploitation"]["source"], "cisa-adp")
+        self.assertNotIn("note", risk["exploitation"])
+
+    def test_http_404_uses_kev(self) -> None:
+        def missing(url: str) -> dict:
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+        original = remediation_priority._http_json
+        remediation_priority._http_json = missing
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                found = remediation_priority._fetch_redhat(
+                    ["CVE-2022-45688"], Path(tmp), offline=False, now="2026-10-30"
+                )
+                cached = json.loads(
+                    (Path(tmp) / "redhat" / "CVE-2022-45688.json").read_text(encoding="utf-8")
+                )
+        finally:
+            remediation_priority._http_json = original
+        self.assertIsNone(found["CVE-2022-45688"])
+        self.assertTrue(cached["missing"])
+        risk = _risk("CVE-2022-45688", in_kev=True, adp={"exploitation": "poc"})
+        self.assertEqual(risk["exploitation"]["value"], "Active")
+        self.assertEqual(risk["exploitation"]["source"], "cisa-kev")
+        self.assertNotIn("note", risk["exploitation"])
+
+    def test_fetch_error_without_cache_warns_and_uses_kev(self) -> None:
+        def fail(url: str) -> dict:
+            raise urllib.error.URLError("timed out")
+
+        original = remediation_priority._http_json
+        remediation_priority._http_json = fail
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                err = io.StringIO()
+                with redirect_stderr(err):
+                    found = remediation_priority._fetch_redhat(
+                        ["CVE-2021-44228"], Path(tmp), offline=False, now="2026-10-30"
+                    )
+        finally:
+            remediation_priority._http_json = original
+        self.assertIsNone(found["CVE-2021-44228"])
+        self.assertIn("Red Hat VEX fetch failed", err.getvalue())
+        risk = _risk("CVE-2021-44228", in_kev=True)
+        self.assertEqual(risk["exploitation"]["source"], "cisa-kev")
+        self.assertNotIn("note", risk["exploitation"])
+
+    def test_not_listed_but_kev_listed_notes_the_lag(self) -> None:
+        risk = _risk(
+            "CVE-2021-44228",
+            in_kev=True,
+            redhat={"status": "not_listed", "fetched_at": "2026-10-30"},
+        )
+        self.assertEqual(risk["exploitation"]["value"], "Active")
+        self.assertEqual(risk["exploitation"]["source"], "cisa-kev")
+        self.assertEqual(risk["exploitation"]["note"], "Red Hat record not yet updated")
+
+    def test_missing_threats_array_is_no_answer(self) -> None:
+        doc = {"vulnerabilities": [{"cve": "CVE-2021-44228", "title": "no threats"}]}
+        self.assertIsNone(remediation_priority.parse_redhat_vex(doc, "CVE-2021-44228"))
+        self.assertIsNone(remediation_priority.parse_redhat_vex({"vulnerabilities": []}, "CVE-2021-44228"))
+        risk = _risk("CVE-2021-44228", in_kev=True, redhat=None)
+        self.assertEqual(risk["exploitation"]["source"], "cisa-kev")
+        self.assertNotIn("note", risk["exploitation"])
+
+    def test_redhat_and_kev_missing_uses_adp_then_assumed(self) -> None:
+        adp = _risk(
+            "CVE-2022-45688",
+            in_kev=False,
+            adp={"exploitation": "poc", "automatable": "no"},
+            redhat=None,
+        )
+        self.assertEqual(adp["exploitation"]["value"], "Public PoC")
+        self.assertEqual(adp["exploitation"]["source"], "cisa-adp")
+        assumed = _risk("CVE-2022-45688", in_kev=False, adp=None, redhat=None)
+        self.assertEqual(assumed["exploitation"]["value"], "Public PoC")
+        self.assertEqual(assumed["exploitation"]["source"], "assumed")
+        self.assertTrue(assumed["exploitation"]["assumed"])
+
+    def test_override_beats_redhat_and_kev(self) -> None:
+        risk = _risk(
+            "CVE-2021-44228",
+            in_kev=True,
+            redhat={
+                "status": "exploited",
+                "date": "2021-12-10T00:00:00+00:00",
+                "fetched_at": "2026-10-30",
+            },
+            config=_config(
+                overrides={
+                    "CVE-2021-44228": {
+                        "exploitation": "none",
+                        "note": "customer says not exploited",
+                    }
+                }
+            ),
+        )
+        self.assertEqual(risk["exploitation"]["value"], "None")
+        self.assertEqual(risk["exploitation"]["source"], "customer-provided")
+        self.assertEqual(risk["exploitation"]["note"], "customer says not exploited")
+
+    def test_offline_reads_redhat_cache_and_makes_no_calls(self) -> None:
+        calls: list[str] = []
+
+        def boom(url: str) -> dict:
+            calls.append(url)
+            raise AssertionError(url)
+
+        original = remediation_priority._http_json
+        remediation_priority._http_json = boom
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                cache = Path(tmp)
+                (cache / "redhat").mkdir()
+                (cache / "redhat" / "CVE-2021-44228.json").write_text(
+                    json.dumps(
+                        {
+                            "fetched_at": "2026-10-30",
+                            "status": "exploited",
+                            "date": "2021-12-10T00:00:00+00:00",
+                            "details": "CISA: https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (cache / "kev.json").write_text(
+                    json.dumps({"fetched_at": "2026-10-30", "cve_ids": ["CVE-2021-44228"]}),
+                    encoding="utf-8",
+                )
+                matches = [_match("log4j", [{"id": "CVE-2021-44228", "cvss": 10.0}])]
+                remediation_priority.apply_risk(
+                    matches,
+                    root=cache,
+                    cache_dir=cache,
+                    offline=True,
+                    now="2026-10-30",
+                )
+        finally:
+            remediation_priority._http_json = original
+        self.assertEqual(calls, [])
+        point = matches[0]["cves"][0]["risk"]["exploitation"]
+        self.assertEqual(point["source"], "redhat-vex")
+        self.assertEqual(point["value"], "Active")
+        self.assertIn("listed 2021-12-10", point["note"])
 
 
 class PrBodyTests(unittest.TestCase):

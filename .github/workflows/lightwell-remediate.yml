@@ -30,6 +30,9 @@ on:
       - "lightwell-github/scan_poms.py"
       - "lightwell-github/osv_cves.py"
       - "lightwell-github/write_badge.py"
+      - "lightwell-github/remediation_priority.py"
+      - "lightwell-github/ssvc/**"
+      - "targets/**"
       - ".github/workflows/lightwell-remediate.yml"
 
 permissions:
@@ -116,16 +119,16 @@ jobs:
         run: |
           PLUGIN="../_lightwell/lightwell-github"
           TARGET_NAME="${TARGET_REPO##*/}"
-          RISK_FILE="../_lightwell/targets/${TARGET_NAME}.lightwell-risk.json"
-          RISK_ARGS=()
-          if [ -f "$RISK_FILE" ]; then
-            RISK_ARGS+=(--risk-config "$RISK_FILE")
+          RPE_FILE="../_lightwell/targets/${TARGET_NAME}.lightwell-rpe.json"
+          RPE_ARGS=()
+          if [ -f "$RPE_FILE" ]; then
+            RPE_ARGS+=(--rpe-config "$RPE_FILE")
           fi
           python3 "$PLUGIN/scan_poms.py" \
             --root . \
             --catalog "$PLUGIN/catalog.json" \
             --out-dir /tmp/lightwell-out \
-            "${RISK_ARGS[@]}"
+            "${RPE_ARGS[@]}"
           MATCH_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/lightwell-out/matches.json'))['matches']))")
           echo "match_count=$MATCH_COUNT" >> "$GITHUB_OUTPUT"
           cat /tmp/lightwell-out/report.md >> "$GITHUB_STEP_SUMMARY"
