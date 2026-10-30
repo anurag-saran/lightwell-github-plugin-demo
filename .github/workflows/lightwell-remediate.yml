@@ -8,12 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       target_repo:
-        description: App repo to remediate (owner/name). Schedule/push covers all four.
+        description: App repo to remediate (owner/name). Schedule/push covers every target.
         required: true
         default: anurag-saran/payments-service
         type: choice
         options:
           - anurag-saran/payments-service
+          - anurag-saran/fraud-service
           - anurag-saran/payments-service-notests
           - anurag-saran/payments-service-grade-c
           - anurag-saran/payments-service-grade-f
@@ -30,6 +31,7 @@ on:
       - "lightwell-github/scan_poms.py"
       - "lightwell-github/osv_cves.py"
       - "lightwell-github/write_badge.py"
+      - "lightwell-github/write_dashboard.py"
       - "lightwell-github/remediation_priority.py"
       - "lightwell-github/ssvc/**"
       - "targets/**"
@@ -51,7 +53,7 @@ jobs:
           SELECTED: ${{ inputs.target_repo }}
         run: |
           set -euo pipefail
-          ALL='["anurag-saran/payments-service","anurag-saran/payments-service-notests","anurag-saran/payments-service-grade-c","anurag-saran/payments-service-grade-f"]'
+          ALL='["anurag-saran/payments-service","anurag-saran/fraud-service","anurag-saran/payments-service-notests","anurag-saran/payments-service-grade-c","anurag-saran/payments-service-grade-f"]'
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "${SELECTED:-}" ]; then
             # JSON-encode the single selected repo
             echo "targets=$(python3 -c 'import json,os; print(json.dumps([os.environ["SELECTED"]]))')" >> "$GITHUB_OUTPUT"
@@ -73,13 +75,13 @@ jobs:
     env:
       TARGET_REPO: ${{ matrix.target_repo }}
       DRY_RUN: ${{ inputs.dry_run || false }}
-      # Fine-grained PAT: Contents + Pull requests on all four payment app repos.
+      # Fine-grained PAT: Contents + Pull requests on the payment apps and fraud-service.
       GH_TOKEN: ${{ secrets.LIGHTWELL_REPO_TOKEN }}
     steps:
       - name: Require LIGHTWELL_REPO_TOKEN
         run: |
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::Set repository secret LIGHTWELL_REPO_TOKEN (fine-grained PAT: Contents + Pull requests on all payment app targets)."
+            echo "::error::Set repository secret LIGHTWELL_REPO_TOKEN (fine-grained PAT: Contents + Pull requests on the payment apps and fraud-service)."
             exit 1
           fi
 
@@ -249,3 +251,77 @@ jobs:
             echo
             echo "Merge to accept, or close to reject."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # dashboard.md is not a push path, so committing it does not start another run.
+  dashboard:
+    name: Publish app priority dashboard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: lightwell-dashboard
+      cancel-in-progress: false
+    steps:
+      - name: Checkout Lightwell plugin
+        uses: actions/checkout@v4
+        with:
+          path: _lightwell
+
+      - name: Checkout payments-service
+        uses: actions/checkout@v4
+        with:
+          repository: anurag-saran/payments-service
+          path: _payments-service
+
+      - name: Checkout fraud-service
+        uses: actions/checkout@v4
+        with:
+          repository: anurag-saran/fraud-service
+          path: _fraud-service
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan dashboard apps and write dashboard.md
+        run: |
+          set -euo pipefail
+          PLUGIN="$GITHUB_WORKSPACE/_lightwell/lightwell-github"
+          ARGS=()
+          while IFS='|' read -r repo dir; do
+            name="${repo##*/}"
+            out="/tmp/dash/$name"
+            mkdir -p "$out"
+            rpe_args=()
+            rpe="$GITHUB_WORKSPACE/_lightwell/targets/${name}.lightwell-rpe.json"
+            if [ -f "$rpe" ]; then
+              rpe_args+=(--rpe-config "$rpe")
+            fi
+            python3 "$PLUGIN/scan_poms.py" \
+              --root "$GITHUB_WORKSPACE/$dir" \
+              --catalog "$PLUGIN/catalog.json" \
+              --out-dir "$out" \
+              "${rpe_args[@]}"
+            ARGS+=(--app "$repo=$out/matches.json")
+          done <<'EOF'
+          anurag-saran/payments-service|_payments-service
+          anurag-saran/fraud-service|_fraud-service
+          EOF
+          python3 "$PLUGIN/write_dashboard.py" \
+            "${ARGS[@]}" \
+            --out "$GITHUB_WORKSPACE/_lightwell/dashboard.md"
+
+      - name: Commit dashboard.md
+        working-directory: _lightwell
+        run: |
+          set -euo pipefail
+          git config user.name "lightwell-bot"
+          git config user.email "lightwell-bot@users.noreply.github.com"
+          git add dashboard.md
+          if git diff --cached --quiet; then
+            echo "Dashboard already up to date."
+          else
+            git commit -m "Refresh the app priority dashboard."
+            git push
+          fi

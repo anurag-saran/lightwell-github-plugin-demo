@@ -19,9 +19,12 @@ The app repos are normal Maven apps — **no** Lightwell plugin code required th
 | Target app | Role |
 |---|---|
 | [`payments-service`](https://github.com/anurag-saran/payments-service) | Live grade **B** (jackson drop-in) |
+| [`fraud-service`](https://github.com/anurag-saran/fraud-service) | Second dashboard app (logback-classic, commons-fileupload) |
 | [`payments-service-notests`](https://github.com/anurag-saran/payments-service-notests) | REACHABILITY_ONLY |
 | [`payments-service-grade-c`](https://github.com/anurag-saran/payments-service-grade-c) | Live grade **C** |
 | [`payments-service-grade-f`](https://github.com/anurag-saran/payments-service-grade-f) | Live grade **F** |
+
+The [app priority dashboard](dashboard.md) lists payments-service and fraud-service with each app’s remediation priority, available libraries, and CVEs. The grade clones stay off that page.
 
 Each app should include [`.github/workflows/lightwell-badge-sync.yml`](samples/lightwell-badge-sync.yml)
 (checks out this plugin for scan/badge helpers). After a remediation PR merges — or any
@@ -35,7 +38,7 @@ Each app should include [`.github/workflows/lightwell-badge-sync.yml`](samples/l
 
 ## One-time setup
 
-1. Create a **fine-grained PAT** with access to **all four** payment app repos:
+1. Create a **fine-grained PAT** with access to the payment app repos and `fraud-service`:
    - **Contents:** Read and write
    - **Pull requests:** Read and write
    - (Classic `repo` scope works but is broader than needed.)
@@ -49,7 +52,7 @@ Each app should include [`.github/workflows/lightwell-badge-sync.yml`](samples/l
 | Remediation PR | Branch `lightwell/remediations` on the **target** app (`--force-with-lease`) |
 | Available-updates badge | Branch `lightwell/badge` on the **target** app (never commits to `main`). The message is the update count, plus the same application priority the remediation PR shows. |
 | After pom merge | Target app workflow **Lightwell badge sync** (on `pom.xml` change) refreshes the count |
-| Schedule | Weekly Monday 09:00 UTC — **all four** payment apps |
+| Schedule | Weekly Monday 09:00 UTC — the payment apps and fraud-service |
 | Manual | Actions → Lightwell Remediate → pick one of the four targets |
 
 Point shields.io at:
@@ -59,14 +62,14 @@ Point shields.io at:
 ## Run against a payment app
 
 1. Open **Actions → Lightwell Remediate → Run workflow**
-2. Pick a target (`payments-service`, `-notests`, `-grade-c`, or `-grade-f`)
+2. Pick a target (`payments-service`, `fraud-service`, `-notests`, `-grade-c`, or `-grade-f`)
 3. Optionally enable **dry_run** to scan without push/PR
 4. Run — PR opens on the **app** repo (unless dry-run)
 5. On the app: review PR → **merge** or **close**
 6. After merge, the app’s **Lightwell badge sync** workflow runs automatically and
    updates the README badge (no second manual plugin run)
 
-Schedule and catalog pushes remediate **all four** targets in parallel.
+Schedule and catalog pushes remediate every target in parallel.
 
 ### Install badge sync on a new app
 
@@ -85,6 +88,7 @@ cp samples/lightwell-badge-sync.yml /path/to/app/.github/workflows/
 | `osv_cves.py` | Fetch/load Lightwell OSV advisories; CVSS 3.1 base score; attach to matches |
 | `apply_bumps.py` | Apply version bumps from matches |
 | `write_badge.py` | Write shields.io endpoint JSON (update count and application priority) |
+| `write_dashboard.py` | Write `dashboard.md`: priority, libraries, and CVEs for each demo app |
 | `sync_catalog.py` | Crawl Lightwell Maven indexes → `catalog.json` (`--check` / `--dry-run`) |
 
 ## Local dry-run (against a local clone of the app)
