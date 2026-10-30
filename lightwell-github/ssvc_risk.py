@@ -754,10 +754,53 @@ def _decision_label(point: dict[str, Any]) -> str:
     return label
 
 
+# Shields badges are the colored text GitHub keeps in a pull-request table.
+# A single hyphen in the badge path is the color separator; a double hyphen is a hyphen.
+_OUTCOME_COLOR = {
+    "Immediate": "b91c1c",
+    "Out-of-Cycle": "c2410c",
+    "Scheduled": "a16207",
+    "Defer": "15803d",
+}
+_OUTCOME_MEANING = (
+    ("Immediate", 'Act now (the "Big Red Button")'),
+    ("Out-of-Cycle", "Security patch lane, ahead of the feature release"),
+    ("Scheduled", "Next normal release"),
+    ("Defer", "Track"),
+)
+
+
+def _shield(label: str, color: str) -> str:
+    encoded = label.replace("-", "--").replace(" ", "_")
+    url = f"https://img.shields.io/badge/{encoded}-{color}?style=flat-square"
+    return f"![{label}]({url})"
+
+
 def _outcome_label(outcome: str, declared: bool) -> str:
-    if declared:
-        return f"{outcome} (declared)"
-    return outcome
+    label = f"{outcome} (declared)" if declared else outcome
+    color = _OUTCOME_COLOR.get(outcome, "6b7280")
+    return _shield(label, color)
+
+
+def _outcome_index() -> list[str]:
+    lines = [
+        "Outcome key for **If the app is internal** and **If the app is external**:",
+        "",
+        "| | Value | Meaning |",
+        "|---|-------|---------|",
+    ]
+    for outcome, meaning in _OUTCOME_MEANING:
+        lines.append(f"| {_shield(outcome, _OUTCOME_COLOR[outcome])} | {outcome} | {meaning} |")
+    lines.extend(
+        [
+            "",
+            "Exploitation is **None**, **Public PoC**, or **Active**. "
+            "Automatable is **No** or **Yes**. "
+            "App impact is **Low**, **Medium**, **High**, or **Very High**.",
+            "",
+        ]
+    )
+    return lines
 
 
 def format_epss(value: float | None) -> str:
@@ -794,10 +837,10 @@ def render_section(matches: list[dict[str, Any]]) -> str:
         "",
         f"SSVC data found for {found} of {total} CVEs; {assumed} values assumed.",
         "",
-        "| CVE | Library (current → Lightwell build) | CVSS | Exploited? | Automatable? "
-        "| App impact | If internal | If external | EPSS |",
-        "|-----|--------------------------------------|------|------------|-------------|"
-        "------------|-------------|-------------|----------------|",
+        "| CVE | Library (current → Lightwell build) | CVSS | Exploitation | Automatable "
+        "| App impact | If the app is internal | If the app is external | EPSS |",
+        "|-----|--------------------------------------|------|--------------|-------------|"
+        "------------|------------------------|------------------------|------|",
     ]
     rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
     empty: list[dict[str, Any]] = []
@@ -837,15 +880,8 @@ def render_section(matches: list[dict[str, Any]]) -> str:
         lines.append(
             f"| — | {_library_cell(match)} | — | — | — | — | — | — | — |"
         )
-    lines.extend(
-        [
-            "",
-            'Immediate = act now (the "Big Red Button") · '
-            "Out-of-Cycle = security patch lane, ahead of the feature release · "
-            "Scheduled = next normal release · Defer = track.",
-            "",
-        ]
-    )
+    lines.append("")
+    lines.extend(_outcome_index())
     for match, cve in rows:
         risk = cve["risk"]
         lines.append("<details>")

@@ -195,6 +195,16 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(risk["outcome_external"], "Out-of-Cycle")
         section = ssvc_risk.render_section([_match("spring-core", [_cve("CVE-1", risk, 5.0)])])
         self.assertIn("High (demo setting)", section)
+        self.assertIn("| Exploitation | Automatable |", section)
+        self.assertNotIn("Exploited?", section)
+        self.assertIn("If the app is internal", section)
+        self.assertIn("![Scheduled](https://img.shields.io/badge/Scheduled-a16207", section)
+        self.assertIn(
+            "![Out-of-Cycle](https://img.shields.io/badge/Out--of--Cycle-c2410c",
+            section,
+        )
+        self.assertIn("Outcome key", section)
+        self.assertIn("Exploitation is **None**, **Public PoC**, or **Active**.", section)
         self.assertIn("SSVC data found for 0 of 1 CVEs; 2 values assumed.", section)
         self.assertIn("Risk data as of 2026-10-29 · SSVC table deployer_patch_application_priority_1_0_0", section)
 

@@ -122,19 +122,19 @@ that file. They are not reimplemented in Python.
 | CVE | Advisory fixed by the Lightwell build |
 | Library (current → Lightwell build) | Dependency the scan matched |
 | CVSS | Base score from Lightwell OSV. Kept alongside SSVC |
-| Exploited? | SSVC Exploitation: None, Public PoC, or Active |
-| Automatable? | SSVC Automatable: Yes or No |
+| Exploitation | None, Public PoC, or Active |
+| Automatable | No or Yes |
 | App impact | SSVC Human Impact for this application |
-| If internal | Outcome when System Exposure is Controlled |
-| If external | Outcome when System Exposure is Open |
+| If the app is internal | Colored outcome when System Exposure is Controlled |
+| If the app is external | Colored outcome when System Exposure is Open |
 | EPSS | FIRST exploit probability, display and tie-break only. Missing is `n/a` |
 
 Both exposure columns are always computed. The scan does not ask which one you are.
 A config `exposure` of `internal` or `external` marks that column `(declared)` and
 still fills the other column.
 
-Legend: Immediate = act now (the "Big Red Button") · Out-of-Cycle = security patch
-lane, ahead of the feature release · Scheduled = next normal release · Defer = track.
+Under the table, a color key lists the four outcomes: Immediate (red),
+Out-of-Cycle (orange), Scheduled (amber), and Defer (green).
 
 ### Sources and fallbacks
 
