@@ -741,17 +741,36 @@ def _apply_risk(
 def _impact_label(point: dict[str, Any], demo: bool) -> str:
     label = str(point.get("value") or "")
     if point.get("assumed"):
-        return f"{label} (assumed)"
+        return f"{label}†"
     if demo and point.get("source") == "config":
-        return f"{label} (demo setting)"
+        return f"{label}*"
     return label
 
 
 def _decision_label(point: dict[str, Any]) -> str:
     label = str(point.get("value") or "")
     if point.get("assumed"):
-        return f"{label} (assumed)"
+        return f"{label}†"
     return label
+
+
+def _source_phrase(source: str, cve_id: str | None) -> str:
+    if source == "cisa-adp" and cve_id:
+        return f"source [CISA ADP](https://www.cve.org/CVERecord?id={cve_id})"
+    if source == "cisa-kev":
+        return (
+            "source [CISA KEV]"
+            "(https://www.cisa.gov/known-exploited-vulnerabilities-catalog)"
+        )
+    if source == "first-epss" and cve_id:
+        return f"source [FIRST EPSS](https://api.first.org/data/v1/epss?cve={cve_id})"
+    if source == "config":
+        return "source CMDB"
+    if source == "assumed":
+        return "source none†"
+    if source == "customer-provided":
+        return "source customer-provided"
+    return f"source {source}"
 
 
 # Shields badges are the colored text GitHub keeps in a pull-request table.
@@ -794,9 +813,27 @@ def _outcome_index() -> list[str]:
     lines.extend(
         [
             "",
-            "Exploitation is **None**, **Public PoC**, or **Active**. "
-            "Automatable is **No** or **Yes**. "
-            "App impact is **Low**, **Medium**, **High**, or **Very High**.",
+            "Where the columns come from:",
+            "",
+            "| Column | Source |",
+            "|--------|--------|",
+            "| Exploitation | [CISA ADP](https://github.com/cisagov/vulnrichment) "
+            "SSVC block on the [CVE record](https://www.cve.org/). "
+            "A CVE in the [CISA KEV catalog]"
+            "(https://www.cisa.gov/known-exploited-vulnerabilities-catalog) is Active. |",
+            "| Automatable | The same CISA ADP SSVC block. Yes or No. |",
+            "| App impact | CMDB record for this application: how much harm an exploit "
+            "would cause here. Low, Medium, High, or Very High. |",
+            "| EPSS | [FIRST EPSS](https://www.first.org/epss/): chance of exploitation "
+            "activity in the next 30 days. Used only to order ties, not as an SSVC input. |",
+            "| CVSS | Base score from the Lightwell OSV advisory. "
+            "The number links to the Red Hat CVE page. |",
+            "",
+            "† The source had no value. Exploitation then uses Public PoC and "
+            "Automatable uses Yes, so the priority is not lowered. "
+            "App impact then uses Medium.",
+            "",
+            "* App impact was selected for this demo. It was not read from a CMDB.",
             "",
         ]
     )
@@ -813,11 +850,13 @@ def _library_cell(match: dict[str, Any]) -> str:
     return f"{match.get('artifactId')} {match.get('fromVersion')} → {match.get('toVersion')}"
 
 
-def _input_line(label: str, point: dict[str, Any], shown: str) -> str:
-    parts = [f"{label}: {shown}", f"source {point.get('source')}"]
+def _input_line(label: str, point: dict[str, Any], shown: str, cve_id: str | None) -> str:
+    parts = [f"{label}: {shown}", _source_phrase(str(point.get("source") or ""), cve_id)]
     fetched = point.get("fetched_at")
     if fetched:
         parts.append(f"fetched {fetched}")
+    if point.get("source") == "config" and shown.endswith("*"):
+        parts.append("selected for this demo")
     note = point.get("note")
     if note and point.get("source") == "customer-provided":
         parts.append(note)
@@ -833,9 +872,13 @@ def render_section(matches: list[dict[str, Any]]) -> str:
     lines = [
         "## SSVC priority",
         "",
+        "SSVC (Stakeholder-Specific Vulnerability Categorization) chooses how fast "
+        "to patch: Immediate, Out-of-Cycle, Scheduled, or Defer. It uses Exploitation, "
+        "Automatable, this application's impact, and whether the system is internal or external.",
+        "",
         f"Risk data as of {meta.get('as_of')} · SSVC table {meta.get('table')}",
         "",
-        f"SSVC data found for {found} of {total} CVEs; {assumed} values assumed.",
+        f"SSVC data found for {found} of {total} CVEs; {assumed} values had no source record.",
         "",
         "| CVE | Library (current → Lightwell build) | CVSS | Exploitation | Automatable "
         "| App impact | If the app is internal | If the app is external | EPSS |",
@@ -855,9 +898,12 @@ def render_section(matches: list[dict[str, Any]]) -> str:
     for match, cve in rows:
         risk = cve["risk"]
         declared = risk.get("exposure_declared")
-        cvss = cve.get("cvss")
-        cvss_cell = "—" if cvss is None else f"{cvss:g}"
         cve_id = cve.get("id")
+        cvss = cve.get("cvss")
+        if cvss is None:
+            cvss_cell = "—"
+        else:
+            cvss_cell = f"[{cvss:g}](https://access.redhat.com/security/cve/{cve_id})"
         link = f"[`{cve_id}`](https://access.redhat.com/security/cve/{cve_id})"
         lines.append(
             "| {cve} | {lib} | {cvss} | {expl} | {auto} | {impact} | {internal} | {external} | {epss} |".format(
@@ -887,11 +933,13 @@ def render_section(matches: list[dict[str, Any]]) -> str:
         lines.append("<details>")
         lines.append(f"<summary>How this was computed: {cve.get('id')}</summary>")
         lines.append("")
+        cve_id = cve.get("id")
         lines.append(
             _input_line(
                 "Exploitation",
                 risk["exploitation"],
                 _decision_label(risk["exploitation"]),
+                cve_id,
             )
         )
         lines.append(
@@ -899,6 +947,7 @@ def render_section(matches: list[dict[str, Any]]) -> str:
                 "Automatable",
                 risk["automatable"],
                 _decision_label(risk["automatable"]),
+                cve_id,
             )
         )
         lines.append(
@@ -906,6 +955,7 @@ def render_section(matches: list[dict[str, Any]]) -> str:
                 "Human Impact",
                 risk["human_impact"],
                 _impact_label(risk["human_impact"], bool(risk.get("demo_setting"))),
+                cve_id,
             )
         )
         declared = risk.get("exposure_declared")
@@ -926,7 +976,8 @@ def render_section(matches: list[dict[str, Any]]) -> str:
             fetched = risk.get("epss_fetched_at")
             extra = f" · fetched {fetched}" if fetched else ""
             lines.append(
-                f"- EPSS: {format_epss(risk.get('epss'))} · source first-epss{extra}"
+                f"- EPSS: {format_epss(risk.get('epss'))} · "
+                f"{_source_phrase('first-epss', cve_id)}{extra}"
             )
         if risk.get("note"):
             lines.append(f"- Note: {risk['note']}")

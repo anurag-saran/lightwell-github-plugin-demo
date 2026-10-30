@@ -194,7 +194,11 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(risk["outcome_internal"], "Scheduled")
         self.assertEqual(risk["outcome_external"], "Out-of-Cycle")
         section = ssvc_risk.render_section([_match("spring-core", [_cve("CVE-1", risk, 5.0)])])
-        self.assertIn("High (demo setting)", section)
+        self.assertIn("High*", section)
+        self.assertIn("selected for this demo", section)
+        self.assertIn("source CMDB", section)
+        self.assertNotIn("(demo setting)", section)
+        self.assertNotIn("(assumed)", section)
         self.assertIn("| Exploitation | Automatable |", section)
         self.assertNotIn("Exploited?", section)
         self.assertIn("If the app is internal", section)
@@ -204,8 +208,15 @@ class DecisionTests(unittest.TestCase):
             section,
         )
         self.assertIn("Outcome key", section)
-        self.assertIn("Exploitation is **None**, **Public PoC**, or **Active**.", section)
-        self.assertIn("SSVC data found for 0 of 1 CVEs; 2 values assumed.", section)
+        self.assertIn("Where the columns come from:", section)
+        self.assertIn("App impact was selected for this demo", section)
+        self.assertIn(
+            "SSVC data found for 0 of 1 CVEs; 2 values had no source record.",
+            section,
+        )
+        self.assertIn("[5](https://access.redhat.com/security/cve/CVE-1)", section)
+        self.assertIn("https://github.com/cisagov/vulnrichment", section)
+        self.assertIn("https://www.first.org/epss/", section)
         self.assertIn("Risk data as of 2026-10-29 · SSVC table deployer_patch_application_priority_1_0_0", section)
 
     def test_override_and_declared_exposure(self) -> None:

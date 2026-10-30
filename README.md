@@ -140,9 +140,9 @@ Out-of-Cycle (orange), Scheduled (amber), and Defer (green).
 
 | Decision point | Source | If missing |
 |----------------|--------|------------|
-| Exploitation | CISA KEV, else the CISA ADP SSVC block on the CVE record | Public PoC, marked `(assumed)` |
-| Automatable | CISA ADP SSVC block | Yes, marked `(assumed)` |
-| Human Impact | `.lightwell-risk.json` in the target repo, else `--risk-config` | Medium, marked `(assumed)` |
+| Exploitation | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), else the [CISA ADP](https://github.com/cisagov/vulnrichment) SSVC block on the [CVE record](https://www.cve.org/) | Public PoC, marked † |
+| Automatable | CISA ADP SSVC block | Yes, marked † |
+| App impact | CMDB for this application. A demo config supplies the value when the target has no `.lightwell-risk.json` | Medium, marked † |
 | EPSS | `https://api.first.org/data/v1/epss` in batches of at most 100 CVEs | stored as `null`, shown as `n/a` |
 
 A CVE in the KEV catalog is Exploitation = Active. Vulnrichment tokens map as
@@ -154,8 +154,8 @@ and does not call the feeds. `--no-risk` skips the section. The run still produc
 `matches.json` and `report.md`.
 
 The report header includes the feed date, the table version, and
-`SSVC data found for X of Y CVEs; Z values assumed.` Older CVEs often have no CISA
-ADP record, so many values are assumed.
+`SSVC data found for X of Y CVEs; Z values had no source record.` Older CVEs often
+have no CISA ADP record, so those values are marked †.
 
 Under the table, each CVE has a `How this was computed` trace: every input with its
 value, source, and fetch date, then both decision paths.
@@ -184,8 +184,9 @@ invalid field is ignored and a warning is printed. The other fields still apply.
 
 `--risk-config <path>` is used only when the target has no `.lightwell-risk.json`.
 Demo configs for apps we do not edit live in `targets/`.
-`targets/payments-service.lightwell-risk.json` sets Human Impact to High, and the
-report shows that as `High (demo setting)`. With every other input at its default
+`targets/payments-service.lightwell-risk.json` sets Human Impact to High. The
+report shows that as `High*` and explains that it was selected for the demo, not
+read from a CMDB. With every other input at its default
 (Public PoC, Yes, Medium) both exposure columns are Scheduled, so the demo config
 is what makes the two columns differ.
 
