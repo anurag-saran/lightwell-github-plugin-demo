@@ -1022,6 +1022,9 @@ def _outcome_index() -> list[str]:
             "| Automatable | The same CISA ADP SSVC block. Yes or No. |",
             "| App impact | CMDB record for this application: how much harm an exploit "
             "would cause here. Low, Medium, High, or Very High. |",
+            "| Exposure | CMDB record for this application: internal or internet-facing. |",
+            "| Priority | CERT/CC SSVC table. The application row is the highest across "
+            "these libraries. Each CVE row is that CVE alone. |",
             "| EPSS | [FIRST EPSS](https://www.first.org/epss/): chance of exploitation "
             "activity in the next 30 days. Used only to order ties, not as an RPE table input. |",
             "| CVSS | Base score from the Lightwell OSV advisory. "
@@ -1031,7 +1034,8 @@ def _outcome_index() -> list[str]:
             "Automatable uses Yes, so the priority is not lowered. "
             "App impact then uses Medium.",
             "",
-            "* App impact was selected for this demo. It was not read from a CMDB.",
+            "* Selected for this demo, in place of a CMDB record. "
+            "Applies to App impact and Exposure.",
             "",
         ]
     )
@@ -1069,7 +1073,7 @@ def _shown_outcome(
         return internal, "This application is declared internal."
     if declared == "external":
         return external, "This application is declared external."
-    return external, "This application is external."
+    return external, "This application is treated as external."
 
 
 def _priority_heading(internal: str | None, external: str | None, declared: str | None) -> list[str]:
@@ -1101,6 +1105,23 @@ def _app_impact_labels(matches: list[dict[str, Any]]) -> str:
     return ", ".join(labels) if labels else "—"
 
 
+def _is_demo(matches: list[dict[str, Any]]) -> bool:
+    return any(
+        (cve.get("risk") or {}).get("demo_setting")
+        for match in matches
+        for cve in (match.get("cves") or [])
+    )
+
+
+def _exposure_label(declared: str | None, demo: bool) -> str:
+    name = "Internal" if declared == "internal" else "External"
+    if demo:
+        return f"{name}*"
+    if declared in ("internal", "external"):
+        return f"{name} (declared)"
+    return name
+
+
 def _application_table(
     matches: list[dict[str, Any]],
     internal: str | None,
@@ -1109,21 +1130,16 @@ def _application_table(
 ) -> list[str]:
     """App impact and exposure once. Priority here is the most urgent across libraries."""
     outcome, _where = _shown_outcome(internal, external, declared)
-    if declared == "internal":
-        exposure = "Internal (declared)"
-    elif declared == "external":
-        exposure = "External (declared)"
-    else:
-        exposure = "External"
-    priority = _outcome_label(outcome, declared in ("internal", "external")) if outcome else "—"
+    demo = _is_demo(matches)
+    priority = _outcome_label(outcome, declared in ("internal", "external") and not demo) if outcome else "—"
     return [
-        "App impact and exposure apply to the whole application. "
+        "App impact and exposure come from the CMDB and apply to the whole application. "
         "Each CVE's Priority uses that exposure.",
         "",
-        "| App impact<br>CMDB | Exposure | "
-        f"[Priority]({_CERT_TABLE_URL}) |",
+        "| App impact<br>CMDB | Exposure<br>CMDB | "
+        f"[Highest priority]({_CERT_TABLE_URL}) |",
         "|------------|----------|----------|",
-        f"| {_app_impact_labels(matches)} | {exposure} | {priority} |",
+        f"| {_app_impact_labels(matches)} | {_exposure_label(declared, demo)} | {priority} |",
         "",
     ]
 
@@ -1160,8 +1176,12 @@ def render_section(matches: list[dict[str, Any]]) -> str:
         "",
         f"Source data found for {found} of {total} CVEs; {assumed} values had no source record.",
         (
-            f"Exploit status: Red Hat for {rh_count} of {rh_total} CVEs, "
-            f"CISA KEV fallback for {kev_count}."
+            "No CVE here is listed as exploited by Red Hat or CISA KEV."
+            if rh_count == 0 and kev_count == 0
+            else (
+                f"Exploit status: Red Hat for {rh_count} of {rh_total} CVEs, "
+                f"CISA KEV fallback for {kev_count}."
+            )
         ),
         "",
         *_application_table(matches, internal, external, declared),
@@ -1231,28 +1251,18 @@ def render_section(matches: list[dict[str, Any]]) -> str:
         )
         lines.append(
             _input_line(
-                "Human Impact",
+                "App impact",
                 risk["human_impact"],
                 _impact_label(risk["human_impact"], bool(risk.get("demo_setting"))),
                 cve_id,
             )
         )
         declared = risk.get("exposure_declared")
-        if declared == "internal":
-            lines.append(
-                "- Exposure: internal (declared), so priority uses Controlled. "
-                "The external path (Open) is below."
-            )
-        elif declared == "external":
-            lines.append(
-                "- Exposure: external (declared), so priority uses Open. "
-                "The internal path (Controlled) is below."
-            )
-        else:
-            lines.append(
-                "- Exposure: external, so priority uses Open. "
-                "The internal path (Controlled) is below."
-            )
+        demo = bool(risk.get("demo_setting"))
+        exposure_bits = [f"- Exposure: {_exposure_label(declared, demo)}", "source CMDB"]
+        if demo:
+            exposure_bits.append("selected for this demo")
+        lines.append(" · ".join(exposure_bits))
         if risk.get("epss") is None:
             lines.append("- EPSS: n/a")
         else:

@@ -129,7 +129,7 @@ that file. They are not reimplemented in Python.
 | Exploitation | None, Public PoC, or Active, from [CISA ADP](https://github.com/cisagov/vulnrichment). The value links to that CVE record |
 | Automatable | No or Yes, from the same CISA ADP block. The value links to that CVE record |
 
-App impact and exposure are one row for the application, above the CVE table.
+App impact and exposure both come from the CMDB. They are one row for the application, above the CVE table. A `*` marks a value selected for this demo in place of a CMDB record.
 This report treats the application as external unless `.lightwell-rpe.json` declares
 `internal`. The application Priority is the most urgent outcome across the libraries.
 Each CVE row has its own Priority for that same exposure. Both headers link to the

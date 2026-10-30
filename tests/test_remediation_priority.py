@@ -209,11 +209,12 @@ class DecisionTests(unittest.TestCase):
         for line in section.splitlines():
             self.assertNotIn("SSVC data found", line)
             self.assertNotIn("Prioritization guidance", line)
-        self.assertIn("This application is external.", section)
+        self.assertIn("This application is treated as external.", section)
         self.assertIn("Priority across these libraries is", section)
         self.assertIn("Exploitation<br>[CISA ADP](https://github.com/cisagov/vulnrichment)", section)
         self.assertIn("App impact<br>CMDB", section)
-        self.assertIn("| High* | External |", section)
+        self.assertIn("| High* | External* |", section)
+        self.assertIn("Exposure<br>CMDB", section)
         self.assertIn("EPSS<br>[FIRST](https://www.first.org/epss/)", section)
         header = next(line for line in section.splitlines() if line.startswith("| CVE |"))
         self.assertLess(header.index("EPSS"), header.index("Exploitation"))
@@ -236,7 +237,8 @@ class DecisionTests(unittest.TestCase):
         )
         self.assertIn("Outcome key", section)
         self.assertIn("Where the columns come from:", section)
-        self.assertIn("App impact was selected for this demo", section)
+        self.assertIn("Applies to App impact and Exposure.", section)
+        self.assertIn("- Exposure: External* · source CMDB · selected for this demo", section)
         self.assertIn(
             "Source data found for 0 of 1 CVEs; 2 values had no source record.",
             section,
