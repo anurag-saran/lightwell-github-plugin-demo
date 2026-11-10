@@ -734,27 +734,32 @@ class RedHatTests(unittest.TestCase):
 
 
 class PrBodyTests(unittest.TestCase):
-    def test_short_report_keeps_traces(self) -> None:
-        report = "hello\n<details><summary>How this was computed: CVE-1</summary>\npath\n</details>\n"
-        body = scan_poms.render_pr_body(report, 1)
-        self.assertIn("<details>", body)
-        self.assertLessEqual(len(body), scan_poms.PR_BODY_LIMIT)
-        self.assertIn("## Test plan", body)
-
-    def test_long_report_drops_traces_and_links_report(self) -> None:
-        blocks = []
-        for i in range(200):
-            blocks.append(
-                f"<details><summary>How this was computed: CVE-{i}</summary>\n"
-                + ("x" * 500)
-                + "\n</details>\n"
-            )
-        report = "intro\n" + "".join(blocks)
-        body = scan_poms.render_pr_body(report, 3)
-        self.assertLessEqual(len(body), scan_poms.PR_BODY_LIMIT)
+    def test_pull_request_leads_with_priority_and_skips_traces(self) -> None:
+        urgent = _risk(
+            "CVE-2022-45688",
+            adp={"exploitation": "public poc", "automatable": "yes"},
+            config=_config(human_impact="high", demo=True),
+        )
+        quiet = _risk(
+            "CVE-2022-40152",
+            adp={"exploitation": "public poc", "automatable": "no"},
+            config=_config(human_impact="high", demo=True),
+        )
+        matches = [
+            _match("json", [_cve("CVE-2022-45688", urgent, 7.5)]),
+            _match("woodstox-core", [_cve("CVE-2022-40152", quiet, 6.5)]),
+            _match("commons-io", []),
+        ]
+        body = scan_poms.render_pr_body(matches)
+        self.assertTrue(body.startswith("## Remediation Priority Engine (RPE):"))
+        self.assertIn("Out--of--Cycle-c2410c", body)
+        self.assertIn("Scheduled-a16207", body)
+        self.assertIn("CVE-2022-45688", body)
+        self.assertLess(body.index("json"), body.index("woodstox-core"))
         self.assertNotIn("<details>", body)
-        self.assertIn("report.md", body)
-        self.assertIn("intro", body)
+        self.assertNotIn("Proposed pom diff", body)
+        self.assertNotIn("How this was computed", body)
+        self.assertIn("**Merge**", body)
 
 
 if __name__ == "__main__":

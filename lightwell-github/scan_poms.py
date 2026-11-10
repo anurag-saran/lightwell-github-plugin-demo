@@ -463,52 +463,21 @@ def render_report(matches: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-PR_BODY_LIMIT = 65536
-_DETAILS_RE = re.compile(r"<details>.*?</details>\n?", re.DOTALL)
 _PLUGIN_URL = "https://github.com/anurag-saran/lightwell-github-plugin-demo"
 
 
-def _drop_details(report: str) -> str:
-    return _DETAILS_RE.sub("", report).rstrip() + "\n"
+def render_pr_body(matches: list[dict[str, Any]]) -> str:
+    """Short pull-request body. The priority result comes first.
 
-
-def render_pr_body(report: str, match_count: int) -> str:
-    """PR body capped at GitHub's 65,536 character limit.
-
-    Over-long bodies drop the per-CVE computation traces and point at report.md.
+    The long scan, including computation traces, stays in report.md.
     """
-    preamble = (
-        "## Summary\n\n"
-        f"Lightwell found **{match_count}** matching library update(s) "
-        "and opened this PR automatically.\n\n"
-        f"Opened by plugin: {_PLUGIN_URL}\n\n"
-        "Branch `lightwell/remediations` is owned by the Lightwell bot "
-        "(pushed with `--force-with-lease`).\n\n"
-        "Bumps below include **CVEs fixed**, **CVSS**, and Remediation Priority Engine (RPE) guidance "
-        "for internal and external exposure.\n\n"
-        "**Merge** to accept the update, or **close** to reject it.\n\n"
-    )
-    test_plan = (
-        "\n## Test plan\n\n"
-        "- [ ] Review pom.xml version bumps, the CVE/CVSS table, and the RPE guidance\n"
-        "- [ ] Run `mvn -q test` (or the project build)\n"
-        "- [ ] Confirm Lightwell artifacts resolve in CI\n"
-    )
-    full = preamble + report + test_plan
-    if len(full) <= PR_BODY_LIMIT:
-        return full
-    note = (
-        "\n\nComputation traces were omitted so this pull request body stays within "
-        "GitHub's 65,536 character limit. See `report.md`.\n"
-    )
-    reduced = preamble + _drop_details(report).rstrip() + note + test_plan
-    if len(reduced) <= PR_BODY_LIMIT:
-        return reduced
-    room = PR_BODY_LIMIT - len(preamble) - len(note) - len(test_plan)
-    if room < 0:
-        return (preamble + note + test_plan)[:PR_BODY_LIMIT]
-    clipped = _drop_details(report).rstrip()[:room].rstrip() + "\n"
-    return preamble + clipped + note + test_plan
+    count = len(matches)
+    section = remediation_priority.render_pr_section(matches)
+    close = "**Merge** to accept the update, or **close** to reject it."
+    found = f"Lightwell found **{count}** library update(s). Plugin: {_PLUGIN_URL}"
+    if not section:
+        return f"{found}\n\n{close}\n"
+    return f"{section}\n\n{found}\n\n{close}\n"
 
 
 def _public_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -681,7 +650,7 @@ def main() -> int:
     )
     (out_dir / "report.md").write_text(report + "\n", encoding="utf-8")
     (out_dir / "pr-body.md").write_text(
-        render_pr_body(report, len(matches)) + "\n",
+        render_pr_body(matches) + "\n",
         encoding="utf-8",
     )
 

@@ -948,6 +948,22 @@ def application_priority(matches: list[dict[str, Any]]) -> str | None:
     return outcome
 
 
+def _shown_cve_priority(risk: dict[str, Any]) -> str | None:
+    if risk.get("exposure_declared") == "internal":
+        return risk.get("outcome_internal")
+    return risk.get("outcome_external")
+
+
+def match_priority(match: dict[str, Any]) -> str | None:
+    """Most urgent priority among this library's CVEs, for the exposure in use."""
+    outcomes = [
+        outcome
+        for cve in (match.get("cves") or [])
+        if (outcome := _shown_cve_priority(cve.get("risk") or {}))
+    ]
+    return _most_urgent(outcomes)
+
+
 def priority_color(outcome: str) -> str:
     return _OUTCOME_COLOR.get(outcome, "6b7280")
 
@@ -1166,6 +1182,55 @@ def _table_header() -> list[str]:
         "------------------------|------------------------------|"
         "-----------------------------|----------|",
     ]
+
+
+def render_pr_section(matches: list[dict[str, Any]]) -> str:
+    """Short RPE block for a pull request: the result, then one row per library."""
+    if not any(match.get("_risk_meta") for match in matches):
+        return ""
+    internal, external, declared = _priority_rollup(matches)
+    lines = [
+        *_priority_heading(internal, external, declared),
+        *_application_table(matches, internal, external, declared),
+        "| Library | Update | CVEs | Priority |",
+        "|---------|--------|------|----------|",
+    ]
+    for match in matches:
+        cves = match.get("cves") or []
+        if cves:
+            cve_cell = ", ".join(
+                f"[`{cve['id']}`](https://access.redhat.com/security/cve/{cve['id']})"
+                for cve in cves
+                if cve.get("id")
+            )
+        else:
+            cve_cell = "—"
+        outcome = match_priority(match)
+        declared_exposure = None
+        for cve in cves:
+            declared_exposure = (cve.get("risk") or {}).get("exposure_declared")
+            if declared_exposure:
+                break
+        if outcome:
+            priority = _outcome_label(
+                outcome,
+                declared_exposure in ("internal", "external") and not _is_demo(matches),
+            )
+        else:
+            priority = "—"
+        update = f"{match.get('fromVersion')} → {match.get('toVersion')}"
+        lines.append(
+            f"| {match.get('artifactId')} | {update} | {cve_cell or '—'} | {priority} |"
+        )
+    if _is_demo(matches):
+        lines.extend(
+            [
+                "",
+                "* Selected for this demo, in place of a CMDB record. "
+                "Applies to App impact and Exposure.",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def render_section(matches: list[dict[str, Any]]) -> str:

@@ -219,15 +219,14 @@ jobs:
 
           git add "${POMS[@]}"
           if git diff --cached --quiet; then
-            echo "No pom changes to commit."
-            exit 0
-          fi
-
-          git commit -m "$TITLE"
-          if ! git push -u origin "$BRANCH" --force-with-lease; then
-            echo "force-with-lease rejected; retrying after re-fetch of $BRANCH"
-            git fetch origin "$BRANCH"
-            git push -u origin "$BRANCH" --force-with-lease
+            echo "No pom changes to commit. Updating the pull request body."
+          else
+            git commit -m "$TITLE"
+            if ! git push -u origin "$BRANCH" --force-with-lease; then
+              echo "force-with-lease rejected; retrying after re-fetch of $BRANCH"
+              git fetch origin "$BRANCH"
+              git push -u origin "$BRANCH" --force-with-lease
+            fi
           fi
 
           EXISTING_PR=$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')

@@ -108,9 +108,9 @@ python3 lightwell-github/scan_poms.py --root /path/to/app \
 
 Skip CVE enrichment entirely: add `--no-osv`.
 
-The remediation PR / `report.md` lists each bump with **CVEs fixed** and **CVSS**
-severity (from Lightwell OSV), then a **Remediation Priority Engine (RPE)** section.
-The heading shows the highest priority across every library. Matches are ordered by
+`report.md` lists each bump with **CVEs fixed** and **CVSS**, then the full
+Remediation Priority Engine (RPE) section. The pull request itself leads with the
+application priority and one row per library. Matches are ordered by
 external outcome, then internal outcome, then EPSS, then CVSS. A match with no CVEs
 sorts last. `--no-rpe` leaves the CVSS ordering from the OSV join.
 
@@ -214,9 +214,10 @@ These older names still work:
 | `.lightwell-risk.json` in a target repo | `.lightwell-rpe.json`. A repo with only the old file still loads, and the scan warns to rename it. If both files exist, `.lightwell-rpe.json` is used and the old file is ignored. |
 | `targets/<app>.lightwell-risk.json` | `targets/<app>.lightwell-rpe.json` |
 
-`scan_poms.py` also writes `pr-body.md`. If that body would pass 65,536 characters,
-the computation traces are dropped and the body links to `report.md`. The remediate
-workflow opens the PR from that file.
+`scan_poms.py` also writes `pr-body.md`. That file is the short pull-request body:
+the application priority, then each library's update, CVEs, and priority. Computation
+traces stay in `report.md`. The remediate workflow opens the PR from that file and
+refreshes the body even when the pom versions are already current.
 
 Target builds use the **highest published** `.rhlw-NNNN` (or `.redhat-NNNN`) for
 that upstream version: `sync_catalog.py` takes the max from the Maven index, then
