@@ -86,9 +86,12 @@ class DashboardTests(unittest.TestCase):
         )
         self.assertIn("Out--of--Cycle-c2410c", page)
         self.assertIn("Scheduled-a16207", page)
-        self.assertIn("json 20220320 → 20220320.0.0.rhlw-00003", page)
-        self.assertIn("woodstox-core 6.0.3 → 6.0.3.rhlw-00001", page)
-        self.assertIn("logback-classic 1.2.11 → 1.2.11.rhlw-00001", page)
+        self.assertIn("# Where to patch first", page)
+        self.assertIn("needs a patch before the next feature release", page)
+        self.assertIn("can wait for the next release", page)
+        self.assertIn("| json | 20220320 → 20220320.0.0.rhlw-00003 |", page)
+        self.assertIn("| woodstox-core | 6.0.3 → 6.0.3.rhlw-00001 |", page)
+        self.assertIn("| logback-classic | 1.2.11 → 1.2.11.rhlw-00001 |", page)
         self.assertIn("CVE-2022-45688", page)
         self.assertIn("CVE-2022-40152", page)
         self.assertIn("CVE-2021-42550", page)
@@ -113,7 +116,8 @@ class DashboardTests(unittest.TestCase):
                 )
             ]
         )
-        self.assertIn("| — | json 20220320 → 20220320.0.0.rhlw-00003 |", page)
+        self.assertIn("| json | 20220320 → 20220320.0.0.rhlw-00003 |", page)
+        self.assertIn("| — |", page)
         self.assertNotIn("shields.io", page)
 
     def test_app_with_no_cves(self) -> None:
@@ -125,8 +129,9 @@ class DashboardTests(unittest.TestCase):
                 )
             ]
         )
+        self.assertIn("no CVE decision", page)
         self.assertIn(
-            "commons-fileupload 1.4.0 → 1.4.0.rhlw-00001 | — |",
+            "| commons-fileupload | 1.4.0 → 1.4.0.rhlw-00001 | — | — |",
             page,
         )
 
@@ -164,6 +169,7 @@ class DashboardTests(unittest.TestCase):
             finally:
                 sys.argv = old
             text = out.read_text(encoding="utf-8")
+            self.assertIn("# Where to patch first", text)
             self.assertIn("Defer-15803d", text)
             self.assertIn("CVE-2023-5072", text)
 

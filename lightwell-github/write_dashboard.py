@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the app priority dashboard from one matches.json per application."""
+"""Write the manager dashboard from one matches.json per application."""
 
 from __future__ import annotations
 
@@ -11,55 +11,128 @@ import osv_cves
 import remediation_priority
 
 
-def _library_line(match: dict) -> str:
-    return f"{match.get('artifactId')} {match.get('fromVersion')} → {match.get('toVersion')}"
+_RANK = {"Immediate": 0, "Out-of-Cycle": 1, "Scheduled": 2, "Defer": 3}
+_LEAD = {
+    "Immediate": "needs a patch now",
+    "Out-of-Cycle": "needs a patch before the next feature release",
+    "Scheduled": "can wait for the next release",
+    "Defer": "can be tracked",
+}
+_MEANING = {
+    "Immediate": "Act now.",
+    "Out-of-Cycle": "Patch before the next feature release.",
+    "Scheduled": "Take it in the next release.",
+    "Defer": "Track only.",
+}
 
 
-def _unique_cves(matches: list[dict]) -> list[dict]:
-    found: list[dict] = []
-    seen: set[str] = set()
-    for match in matches:
-        for cve in match.get("cves") or []:
-            cve_id = cve.get("id")
-            if not cve_id or cve_id in seen:
-                continue
-            seen.add(cve_id)
-            found.append(cve)
-    return found
+def _rank(priority: str | None) -> int:
+    return _RANK.get(priority or "", 4)
 
 
-def _join_cell(parts: list[str]) -> str:
+def _ordered_apps(apps: list[tuple[str, list[dict]]]) -> list[tuple[str, list[dict]]]:
+    indexed = list(enumerate(apps))
+    indexed.sort(
+        key=lambda item: (
+            _rank(remediation_priority.application_priority(item[1][1])),
+            item[0],
+        )
+    )
+    return [item[1] for item in indexed]
+
+
+def _ordered_matches(matches: list[dict]) -> list[dict]:
+    indexed = list(enumerate(matches))
+    indexed.sort(
+        key=lambda item: (
+            _rank(remediation_priority.match_priority(item[1])),
+            item[0],
+        )
+    )
+    return [item[1] for item in indexed]
+
+
+def _badge(priority: str | None) -> str:
+    if not priority:
+        return "—"
+    return remediation_priority._shield(priority, remediation_priority.priority_color(priority))
+
+
+def _cve_cell(match: dict) -> str:
+    parts = [
+        osv_cves.format_cve_inline(cve)
+        for cve in (match.get("cves") or [])
+        if cve.get("id")
+    ]
     return "<br>".join(parts) if parts else "—"
 
 
-def render_dashboard(apps: list[tuple[str, list[dict]]]) -> str:
-    """Markdown page. ``apps`` is ``(owner/name, matches)`` in display order."""
-    lines = [
-        "# App priority",
-        "",
-        "Each row is one application. Priority is the Remediation Priority Engine "
-        "result for that app, the same outcome the remediation pull request shows. "
-        "Libraries are the Lightwell updates available now. "
-        "CVEs are the ones those updates address.",
-        "",
-        "| App | Priority | Available libraries | CVEs addressed |",
-        "|-----|----------|---------------------|----------------|",
-    ]
+def _lead(apps: list[tuple[str, list[dict]]]) -> str:
+    sentences = []
     for repo, matches in apps:
-        name = repo.split("/")[-1]
-        link = f"[{name}](https://github.com/{repo})"
+        name = f"**{repo.split('/')[-1]}**"
         priority = remediation_priority.application_priority(matches)
         if priority:
-            badge = remediation_priority._shield(
-                priority, remediation_priority.priority_color(priority)
-            )
+            sentences.append(f"{name} {_LEAD[priority]}")
         else:
-            badge = "—"
-        libraries = [_library_line(match) for match in matches]
-        cves = [osv_cves.format_cve_inline(cve) for cve in _unique_cves(matches)]
-        lines.append(f"| {link} | {badge} | {_join_cell(libraries)} | {_join_cell(cves)} |")
+            sentences.append(f"{name} has updates and no CVE decision")
+    return ". ".join(sentences) + "." if sentences else "No applications."
+
+
+def _app_section(repo: str, matches: list[dict]) -> list[str]:
+    name = repo.split("/")[-1]
+    priority = remediation_priority.application_priority(matches)
+    pulls = (
+        f"https://github.com/{repo}/pulls?q=is%3Apr+is%3Aopen+label%3Alightwell"
+    )
+    heading = f"## [{name}](https://github.com/{repo})"
+    if priority:
+        heading = f"{heading} {_badge(priority)}"
+    ordered = _ordered_matches(matches)
+    with_cves = [match for match in ordered if match.get("cves")]
+    without = [match for match in ordered if not match.get("cves")]
+    shown = with_cves or without
+    lines = [
+        heading,
+        "",
+        _MEANING.get(priority, "No CVE on these updates, so there is no patch decision."),
+        "",
+        f"[Open pull request]({pulls})",
+        "",
+        "| Library | Now → Lightwell | CVEs | Decision |",
+        "|---------|-----------------|------|----------|",
+    ]
+    for match in shown:
+        update = f"{match.get('fromVersion')} → {match.get('toVersion')}"
+        lines.append(
+            f"| {match.get('artifactId')} | {update} | {_cve_cell(match)} | "
+            f"{_badge(remediation_priority.match_priority(match))} |"
+        )
+    if with_cves and without:
+        extras = ", ".join(
+            f"{match.get('artifactId')} {match.get('fromVersion')} → {match.get('toVersion')}"
+            for match in without
+        )
+        lines.extend(["", f"Updates with no CVE: {extras}."])
     lines.append("")
-    return "\n".join(lines)
+    return lines
+
+
+def render_dashboard(apps: list[tuple[str, list[dict]]]) -> str:
+    """Markdown page. ``apps`` is ``(owner/name, matches)``; urgent apps come first."""
+    ordered = _ordered_apps(apps)
+    lines = [
+        "# Where to patch first",
+        "",
+        _lead(ordered),
+        "",
+        "Immediate means act now. Out-of-Cycle means patch before the next feature "
+        "release. Scheduled means the next release. Defer means track only.",
+        "",
+    ]
+    for repo, matches in ordered:
+        lines.extend(_app_section(repo, matches))
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _load_app(spec: str) -> tuple[str, list[dict]]:
