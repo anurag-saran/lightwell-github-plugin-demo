@@ -2,7 +2,14 @@
 
 **payments-service** needs a patch before the next feature release. **fraud-service** can wait for the next release.
 
-Immediate means act now. Out-of-Cycle means patch before the next feature release. Scheduled means the next release. Defer means track only.
+## When to patch
+
+| Decision | When |
+|----------|------|
+| ![Immediate](https://img.shields.io/badge/Immediate-b91c1c?style=flat-square) | Act now |
+| ![Out-of-Cycle](https://img.shields.io/badge/Out--of--Cycle-c2410c?style=flat-square) | Security patch, ahead of the feature release |
+| ![Scheduled](https://img.shields.io/badge/Scheduled-a16207?style=flat-square) | Next planned release |
+| ![Defer](https://img.shields.io/badge/Defer-15803d?style=flat-square) | Track. No patch this cycle |
 
 | Application | Decision | CVEs |
 |-------------|----------|------|

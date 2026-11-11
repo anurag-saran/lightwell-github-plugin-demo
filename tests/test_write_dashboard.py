@@ -87,6 +87,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Out--of--Cycle-c2410c", page)
         self.assertIn("Scheduled-a16207", page)
         self.assertIn("# Where to patch first", page)
+        self.assertIn("## When to patch", page)
+        self.assertIn("Security patch, ahead of the feature release", page)
+        self.assertNotIn("means act now", page)
         self.assertIn("| 2 CVEs |", page)
         self.assertIn("| 1 CVE |", page)
         self.assertIn("<details>", page)
@@ -121,8 +124,7 @@ class DashboardTests(unittest.TestCase):
             ]
         )
         self.assertIn("| json | 20220320 → 20220320.0.0.rhlw-00003 |", page)
-        self.assertIn("| — |", page)
-        self.assertNotIn("shields.io", page)
+        self.assertIn("| — | 1 CVE |", page)
 
     def test_app_with_no_cves(self) -> None:
         page = write_dashboard.render_dashboard(
