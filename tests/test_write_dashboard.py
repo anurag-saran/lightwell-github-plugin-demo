@@ -86,7 +86,10 @@ class DashboardTests(unittest.TestCase):
         )
         self.assertIn("Out--of--Cycle-c2410c", page)
         self.assertIn("Scheduled-a16207", page)
-        self.assertIn("# Where to patch first", page)
+        self.assertIn("# CVE remediation dashboard", page)
+        self.assertIn("| 1 |", page)
+        self.assertIn("## 1. [payments-service]", page)
+        self.assertIn("## 2. [fraud-service]", page)
         self.assertIn("## When to patch", page)
         self.assertIn("Security patch, ahead of the feature release", page)
         self.assertNotIn("means act now", page)
@@ -175,7 +178,7 @@ class DashboardTests(unittest.TestCase):
             finally:
                 sys.argv = old
             text = out.read_text(encoding="utf-8")
-            self.assertIn("# Where to patch first", text)
+            self.assertIn("# CVE remediation dashboard", text)
             self.assertIn("Defer-15803d", text)
             self.assertIn("CVE-2023-5072", text)
 

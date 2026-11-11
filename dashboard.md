@@ -1,4 +1,4 @@
-# Where to patch first
+# CVE remediation dashboard
 
 **payments-service** needs a patch before the next feature release. **fraud-service** can wait for the next release.
 
@@ -11,12 +11,12 @@
 | ![Scheduled](https://img.shields.io/badge/Scheduled-a16207?style=flat-square) | Next planned release |
 | ![Defer](https://img.shields.io/badge/Defer-15803d?style=flat-square) | Track. No patch this cycle |
 
-| Application | Decision | CVEs |
-|-------------|----------|------|
-| [payments-service](https://github.com/anurag-saran/payments-service) | ![Out-of-Cycle](https://img.shields.io/badge/Out--of--Cycle-c2410c?style=flat-square) | 5 CVEs |
-| [fraud-service](https://github.com/anurag-saran/fraud-service) | ![Scheduled](https://img.shields.io/badge/Scheduled-a16207?style=flat-square) | 1 CVE |
+| # | Application | Decision | CVEs |
+|---|-------------|----------|------|
+| 1 | [payments-service](https://github.com/anurag-saran/payments-service) | ![Out-of-Cycle](https://img.shields.io/badge/Out--of--Cycle-c2410c?style=flat-square) | 5 CVEs |
+| 2 | [fraud-service](https://github.com/anurag-saran/fraud-service) | ![Scheduled](https://img.shields.io/badge/Scheduled-a16207?style=flat-square) | 1 CVE |
 
-## [payments-service](https://github.com/anurag-saran/payments-service) ![Out-of-Cycle](https://img.shields.io/badge/Out--of--Cycle-c2410c?style=flat-square)
+## 1. [payments-service](https://github.com/anurag-saran/payments-service) ![Out-of-Cycle](https://img.shields.io/badge/Out--of--Cycle-c2410c?style=flat-square)
 
 Patch before the next feature release.
 
@@ -36,7 +36,7 @@ Updates with no CVE: commons-io 2.11.0 → 2.11.0.rhlw-00001, httpclient 4.5.12 
 
 </details>
 
-## [fraud-service](https://github.com/anurag-saran/fraud-service) ![Scheduled](https://img.shields.io/badge/Scheduled-a16207?style=flat-square)
+## 2. [fraud-service](https://github.com/anurag-saran/fraud-service) ![Scheduled](https://img.shields.io/badge/Scheduled-a16207?style=flat-square)
 
 Take it in the next release.
 

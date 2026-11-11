@@ -24,7 +24,7 @@ The app repos are normal Maven apps — **no** Lightwell plugin code required th
 | [`payments-service-grade-c`](https://github.com/anurag-saran/payments-service-grade-c) | Live grade **C** |
 | [`payments-service-grade-f`](https://github.com/anurag-saran/payments-service-grade-f) | Live grade **F** |
 
-[Where to patch first](dashboard.md) is the manager page: each application's patch decision, then its libraries and CVEs. The grade clones stay off that page.
+The [CVE remediation dashboard](dashboard.md) numbers each service, shows its patch decision and CVE count, and folds the library detail. The grade clones stay off that page.
 
 Each app should include [`.github/workflows/lightwell-badge-sync.yml`](samples/lightwell-badge-sync.yml)
 (checks out this plugin for scan/badge helpers). After a remediation PR merges — or any

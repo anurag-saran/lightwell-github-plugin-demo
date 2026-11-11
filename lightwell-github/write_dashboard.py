@@ -93,13 +93,13 @@ def _lead(apps: list[tuple[str, list[dict]]]) -> str:
     return ". ".join(sentences) + "." if sentences else "No applications."
 
 
-def _app_section(repo: str, matches: list[dict]) -> list[str]:
+def _app_section(number: int, repo: str, matches: list[dict]) -> list[str]:
     name = repo.split("/")[-1]
     priority = remediation_priority.application_priority(matches)
     pulls = (
         f"https://github.com/{repo}/pulls?q=is%3Apr+is%3Aopen+label%3Alightwell"
     )
-    heading = f"## [{name}](https://github.com/{repo})"
+    heading = f"## {number}. [{name}](https://github.com/{repo})"
     if priority:
         heading = f"{heading} {_badge(priority)}"
     ordered = _ordered_matches(matches)
@@ -139,7 +139,7 @@ def render_dashboard(apps: list[tuple[str, list[dict]]]) -> str:
     """Markdown page. ``apps`` is ``(owner/name, matches)``; urgent apps come first."""
     ordered = _ordered_apps(apps)
     lines = [
-        "# Where to patch first",
+        "# CVE remediation dashboard",
         "",
         _lead(ordered),
         "",
@@ -152,17 +152,19 @@ def render_dashboard(apps: list[tuple[str, list[dict]]]) -> str:
         f"| {_badge('Scheduled')} | Next planned release |",
         f"| {_badge('Defer')} | Track. No patch this cycle |",
         "",
-        "| Application | Decision | CVEs |",
-        "|-------------|----------|------|",
+        "| # | Application | Decision | CVEs |",
+        "|---|-------------|----------|------|",
     ]
-    for repo, matches in ordered:
+    for number, (repo, matches) in enumerate(ordered, start=1):
         name = repo.split("/")[-1]
         link = f"[{name}](https://github.com/{repo})"
         priority = remediation_priority.application_priority(matches)
-        lines.append(f"| {link} | {_badge(priority)} | {_count_label(_cve_count(matches))} |")
+        lines.append(
+            f"| {number} | {link} | {_badge(priority)} | {_count_label(_cve_count(matches))} |"
+        )
     lines.append("")
-    for repo, matches in ordered:
-        lines.extend(_app_section(repo, matches))
+    for number, (repo, matches) in enumerate(ordered, start=1):
+        lines.extend(_app_section(number, repo, matches))
     return "\n".join(lines).rstrip() + "\n"
 
 
