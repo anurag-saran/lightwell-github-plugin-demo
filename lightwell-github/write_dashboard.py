@@ -143,7 +143,7 @@ def render_dashboard(apps: list[tuple[str, list[dict]]]) -> str:
         "",
         _lead(ordered),
         "",
-        "## When to patch",
+        "## Decision key",
         "",
         "| Decision | When |",
         "|----------|------|",

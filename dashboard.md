@@ -2,7 +2,7 @@
 
 **payments-service** needs a patch before the next feature release. **fraud-service** can wait for the next release.
 
-## When to patch
+## Decision key
 
 | Decision | When |
 |----------|------|

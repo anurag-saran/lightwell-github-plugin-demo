@@ -90,7 +90,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("| 1 |", page)
         self.assertIn("## 1. [payments-service]", page)
         self.assertIn("## 2. [fraud-service]", page)
-        self.assertIn("## When to patch", page)
+        self.assertIn("## Decision key", page)
         self.assertIn("Security patch, ahead of the feature release", page)
         self.assertNotIn("means act now", page)
         self.assertIn("| 2 CVEs |", page)
