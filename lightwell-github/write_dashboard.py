@@ -67,6 +67,20 @@ def _cve_cell(match: dict) -> str:
     return "<br>".join(parts) if parts else "—"
 
 
+def _cve_count(matches: list[dict]) -> int:
+    seen: set[str] = set()
+    for match in matches:
+        for cve in match.get("cves") or []:
+            cve_id = cve.get("id")
+            if cve_id:
+                seen.add(cve_id)
+    return len(seen)
+
+
+def _count_label(count: int) -> str:
+    return "1 CVE" if count == 1 else f"{count} CVEs"
+
+
 def _lead(apps: list[tuple[str, list[dict]]]) -> str:
     sentences = []
     for repo, matches in apps:
@@ -99,6 +113,9 @@ def _app_section(repo: str, matches: list[dict]) -> list[str]:
         "",
         f"[Open pull request]({pulls})",
         "",
+        "<details>",
+        f"<summary>{_count_label(_cve_count(matches))} · libraries</summary>",
+        "",
         "| Library | Now → Lightwell | CVEs | Decision |",
         "|---------|-----------------|------|----------|",
     ]
@@ -114,7 +131,7 @@ def _app_section(repo: str, matches: list[dict]) -> list[str]:
             for match in without
         )
         lines.extend(["", f"Updates with no CVE: {extras}."])
-    lines.append("")
+    lines.extend(["", "</details>", ""])
     return lines
 
 
@@ -129,7 +146,15 @@ def render_dashboard(apps: list[tuple[str, list[dict]]]) -> str:
         "Immediate means act now. Out-of-Cycle means patch before the next feature "
         "release. Scheduled means the next release. Defer means track only.",
         "",
+        "| Application | Decision | CVEs |",
+        "|-------------|----------|------|",
     ]
+    for repo, matches in ordered:
+        name = repo.split("/")[-1]
+        link = f"[{name}](https://github.com/{repo})"
+        priority = remediation_priority.application_priority(matches)
+        lines.append(f"| {link} | {_badge(priority)} | {_count_label(_cve_count(matches))} |")
+    lines.append("")
     for repo, matches in ordered:
         lines.extend(_app_section(repo, matches))
     return "\n".join(lines).rstrip() + "\n"
