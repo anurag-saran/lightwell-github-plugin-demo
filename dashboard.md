@@ -1,4 +1,4 @@
-# CVE remediation dashboard
+<h1 align="center">CVE Remediation Dashboard</h1>
 
 **payments-service** needs a patch before the next feature release. **fraud-service** can wait for the next release.
 

@@ -139,7 +139,7 @@ def render_dashboard(apps: list[tuple[str, list[dict]]]) -> str:
     """Markdown page. ``apps`` is ``(owner/name, matches)``; urgent apps come first."""
     ordered = _ordered_apps(apps)
     lines = [
-        "# CVE remediation dashboard",
+        '<h1 align="center">CVE Remediation Dashboard</h1>',
         "",
         _lead(ordered),
         "",
