@@ -466,6 +466,37 @@ class OsvCveTests(unittest.TestCase):
             "[`CVE-2099-0001`](https://access.redhat.com/security/cve/CVE-2099-0001)",
         )
 
+    def test_osv_cve_ids_from_aliases_and_upstream(self) -> None:
+        # Current Lightwell demo OSV puts CVEs in upstream and leaves aliases empty.
+        self.assertEqual(
+            osv_cves.osv_cve_ids(
+                {"aliases": ["CVE-2023-51074", "GHSA-pfh2-hfmq-phg5"]}
+            ),
+            ["CVE-2023-51074"],
+        )
+        self.assertEqual(
+            osv_cves.osv_cve_ids(
+                {
+                    "aliases": None,
+                    "upstream": [
+                        "CVE-2025-41249",
+                        "GHSA-jmp9-x22r-554x",
+                        "CVE-2025-41249",
+                    ],
+                }
+            ),
+            ["CVE-2025-41249"],
+        )
+        self.assertEqual(
+            osv_cves.osv_cve_ids(
+                {
+                    "aliases": ["CVE-2022-40152"],
+                    "upstream": ["CVE-2022-40152", "CVE-2023-5072"],
+                }
+            ),
+            ["CVE-2022-40152", "CVE-2023-5072"],
+        )
+
     def test_severity_fallback_via_ghsa_alias(self) -> None:
         # Lightwell demo OSV sometimes omits severity; GHSA alias supplies CVSS.
         lightwell_doc = {

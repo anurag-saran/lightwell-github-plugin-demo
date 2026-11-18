@@ -4,7 +4,8 @@
 Lightwell publishes OSV docs for remediated builds. Public demo index (anonymous):
   https://packages.redhat.com/api/pulp-content/public-lightwell-demo/osv/java/remediated
 
-Only CVE IDs present in advisory ``aliases`` are returned — never invented.
+CVE IDs come from advisory ``aliases`` and ``upstream`` — never invented.
+Newer Lightwell OSV docs put CVEs in ``upstream`` and leave ``aliases`` empty.
 """
 
 from __future__ import annotations
@@ -167,9 +168,14 @@ def severity_with_fallback(
     if score is not None:
         return score, rating, vector
 
-    aliases = [a for a in (doc.get("aliases") or []) if isinstance(a, str)]
+    related_ids = [
+        a
+        for key in ("aliases", "upstream")
+        for a in (doc.get(key) or [])
+        if isinstance(a, str)
+    ]
     # Prefer GHSA — typically includes CVSS when the CVE shell does not.
-    ordered = sorted(aliases, key=lambda a: (0 if a.startswith("GHSA-") else 1, a))
+    ordered = sorted(related_ids, key=lambda a: (0 if a.startswith("GHSA-") else 1, a))
     seen: set[str] = set()
     queue = list(ordered)
     while queue:
@@ -183,21 +189,24 @@ def severity_with_fallback(
         score, rating, vector = severity_from_osv_doc(related)
         if score is not None:
             return score, rating, vector
-        for a2 in related.get("aliases") or []:
-            if isinstance(a2, str) and a2 not in seen:
-                # Chase CVE → GHSA one hop.
-                if a2.startswith("GHSA-"):
-                    queue.insert(0, a2)
-                else:
-                    queue.append(a2)
+        for key in ("aliases", "upstream"):
+            for a2 in related.get(key) or []:
+                if isinstance(a2, str) and a2 not in seen:
+                    # Chase CVE → GHSA one hop.
+                    if a2.startswith("GHSA-"):
+                        queue.insert(0, a2)
+                    else:
+                        queue.append(a2)
     return None, None, None
 
 
 def osv_cve_ids(doc: dict[str, Any]) -> list[str]:
+    """CVE IDs claimed by an OSV doc (``aliases`` and/or ``upstream``)."""
     return sorted(
         {
             a
-            for a in (doc.get("aliases") or [])
+            for key in ("aliases", "upstream")
+            for a in (doc.get(key) or [])
             if isinstance(a, str) and a.startswith("CVE-")
         }
     )
@@ -278,9 +287,9 @@ def fetch_osv_records(base_url: str | None, cache_dir: Path | None = None) -> li
                     names.append(fname)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
             html = _http_get(base + "/").decode("utf-8", errors="replace")
-            found = re.findall(r'href="(\./)?(x_RHLW-[^"]+\.json)"', html)
-            names = sorted({(n[1] if isinstance(n, tuple) else n) for n in found})
-            names = [n[2:] if n.startswith("./") else n for n in names]
+            # Older demos used x_RHLW-*.json; current index uses RHLW-*.json.
+            found = re.findall(r'href="(?:\./)?((?:x_)?RHLW-[^"]+\.json)"', html)
+            names = sorted(set(found))
 
         for fname in names:
             if not fname.endswith(".json"):
